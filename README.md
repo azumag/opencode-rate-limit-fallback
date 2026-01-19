@@ -1,4 +1,6 @@
-# opencode-rate-limit-fallback
+# @azumag/opencode-rate-limit-fallback
+
+[![npm version](https://badge.fury.io/js/@azumag%2Fopencode-rate-limit-fallback.svg)](https://www.npmjs.com/package/@azumag/opencode-rate-limit-fallback)
 
 OpenCode plugin that automatically switches to fallback models when rate limited.
 
@@ -12,18 +14,26 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 
 ## Installation
 
+### Via npm
+
+```bash
+npm install @azumag/opencode-rate-limit-fallback
+```
+
+Then copy to the plugins directory:
+
+```bash
+cp node_modules/@azumag/opencode-rate-limit-fallback/index.ts ~/.config/opencode/plugins/rate-limit-fallback.ts
+```
+
+### Manual Installation
+
 Copy `index.ts` to your OpenCode plugins directory:
 
 ```bash
 mkdir -p ~/.config/opencode/plugins
 curl -o ~/.config/opencode/plugins/rate-limit-fallback.ts \
   https://raw.githubusercontent.com/azumag/opencode-rate-limit-fallback/main/index.ts
-```
-
-Or manually download and copy:
-
-```bash
-cp index.ts ~/.config/opencode/plugins/rate-limit-fallback.ts
 ```
 
 Dependencies (`@opencode-ai/plugin`) will be automatically installed by OpenCode on startup.
