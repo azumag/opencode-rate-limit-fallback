@@ -1,0 +1,27 @@
+{
+  "name": "opencode-rate-limit-fallback",
+  "version": "1.0.0",
+  "description": "OpenCode plugin that automatically switches to fallback models when rate limited",
+  "main": "index.ts",
+  "type": "module",
+  "keywords": [
+    "opencode",
+    "plugin",
+    "rate-limit",
+    "fallback",
+    "ai"
+  ],
+  "author": "azumag",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/azumag/opencode-rate-limit-fallback.git"
+  },
+  "bugs": {
+    "url": "https://github.com/azumag/opencode-rate-limit-fallback/issues"
+  },
+  "homepage": "https://github.com/azumag/opencode-rate-limit-fallback#readme",
+  "dependencies": {
+    "@opencode-ai/plugin": "latest"
+  }
+}
