@@ -1,6 +1,7 @@
 {
   "enabled": true,
   "cooldownMs": 60000,
+  "fallbackMode": "cycle",
   "fallbackModels": [
     { "providerID": "anthropic", "modelID": "claude-sonnet-4-20250514" },
     { "providerID": "google", "modelID": "gemini-2.5-pro" },

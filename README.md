@@ -6,9 +6,11 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 
 ## Features
 
-- Detects rate limit errors (429, "usage limit", "quota exceeded", etc.)
+- Detects rate limit errors (429, "usage limit", "quota exceeded", "high concurrency", etc.)
 - Automatically aborts the current request and retries with a fallback model
 - Configurable fallback model list with priority order
+- Three fallback modes: `cycle`, `stop`, and `retry-last`
+- Session model tracking for sequential fallback across multiple rate limits
 - Cooldown period to prevent immediate retry on rate-limited models
 - Toast notifications for user feedback
 
@@ -51,6 +53,7 @@ Create a configuration file at one of these locations:
 {
   "enabled": true,
   "cooldownMs": 60000,
+  "fallbackMode": "cycle",
   "fallbackModels": [
     { "providerID": "anthropic", "modelID": "claude-sonnet-4-20250514" },
     { "providerID": "google", "modelID": "gemini-2.5-pro" },
@@ -65,7 +68,16 @@ Create a configuration file at one of these locations:
 |--------|------|---------|-------------|
 | `enabled` | boolean | `true` | Enable/disable the plugin |
 | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
+| `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
 | `fallbackModels` | array | See below | List of fallback models in priority order |
+
+### Fallback Modes
+
+| Mode | Description |
+|------|-------------|
+| `"cycle"` | Reset and retry from the first model when all models are exhausted (default) |
+| `"stop"` | Stop and show error when all models are exhausted |
+| `"retry-last"` | Try the last model once more, then reset to first on next prompt |
 
 ### Default Fallback Models
 

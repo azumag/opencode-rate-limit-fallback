@@ -7,10 +7,19 @@ interface FallbackModel {
   modelID: string;
 }
 
+/**
+ * Fallback mode when all models are exhausted:
+ * - "cycle": Reset and retry from the first model (default)
+ * - "stop": Stop and show error message
+ * - "retry-last": Try the last model once, then reset to first on next prompt
+ */
+type FallbackMode = "cycle" | "stop" | "retry-last";
+
 interface PluginConfig {
   fallbackModels: FallbackModel[];
   cooldownMs: number;
   enabled: boolean;
+  fallbackMode: FallbackMode;
 }
 
 const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
@@ -23,6 +32,7 @@ const DEFAULT_CONFIG: PluginConfig = {
   fallbackModels: DEFAULT_FALLBACK_MODELS,
   cooldownMs: 60 * 1000,
   enabled: true,
+  fallbackMode: "cycle",
 };
 
 function loadConfig(directory: string): PluginConfig {
@@ -39,10 +49,13 @@ function loadConfig(directory: string): PluginConfig {
       try {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content);
+        const mode = userConfig.fallbackMode;
+        const validModes: FallbackMode[] = ["cycle", "stop", "retry-last"];
         return {
           ...DEFAULT_CONFIG,
           ...userConfig,
           fallbackModels: userConfig.fallbackModels || DEFAULT_CONFIG.fallbackModels,
+          fallbackMode: validModes.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
         };
       } catch (error) {
         // Config load failed, continue to next path
@@ -193,26 +206,59 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       let nextModel = findNextAvailableModel(currentProviderID || "", currentModelID || "", state.attemptedModels);
 
-      // If no model found and we've attempted models, reset and try again from the beginning
+      // Handle when no model is found based on fallbackMode
       if (!nextModel && state.attemptedModels.size > 0) {
-        state.attemptedModels.clear();
-        // Keep the current model marked as attempted to avoid immediate retry
-        if (currentProviderID && currentModelID) {
-          state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
+        if (config.fallbackMode === "cycle") {
+          // Reset and retry from the first model
+          state.attemptedModels.clear();
+          if (currentProviderID && currentModelID) {
+            state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
+          }
+          nextModel = findNextAvailableModel("", "", state.attemptedModels);
+        } else if (config.fallbackMode === "retry-last") {
+          // Try the last model in the list once, then reset on next prompt
+          const lastModel = config.fallbackModels[config.fallbackModels.length - 1];
+          if (lastModel) {
+            const lastKey = getModelKey(lastModel.providerID, lastModel.modelID);
+            const isLastModelCurrent = currentProviderID === lastModel.providerID && currentModelID === lastModel.modelID;
+
+            if (!isLastModelCurrent && !isModelRateLimited(lastModel.providerID, lastModel.modelID)) {
+              // Use the last model for one more try
+              nextModel = lastModel;
+              await client.tui.showToast({
+                body: {
+                  title: "Last Resort",
+                  message: `Trying ${lastModel.modelID} one more time...`,
+                  variant: "warning",
+                  duration: 3000,
+                },
+              });
+            } else {
+              // Last model also failed, reset for next prompt
+              state.attemptedModels.clear();
+              if (currentProviderID && currentModelID) {
+                state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
+              }
+              nextModel = findNextAvailableModel("", "", state.attemptedModels);
+            }
+          }
         }
-        nextModel = findNextAvailableModel("", "", state.attemptedModels);
+        // "stop" mode: nextModel remains null, will show error below
       }
 
       if (!nextModel) {
         await client.tui.showToast({
           body: {
             title: "No Fallback Available",
-            message: "All models are rate limited",
+            message: config.fallbackMode === "stop"
+              ? "All fallback models exhausted"
+              : "All models are rate limited",
             variant: "error",
             duration: 5000,
           },
         });
         retryState.delete(stateKey);
+        fallbackInProgress.delete(sessionID);
         return;
       }
 
