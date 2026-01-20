@@ -76,6 +76,7 @@ function isRateLimitError(error: any): boolean {
     "quota exceeded",
     "resource exhausted",
     "usage limit",
+    "High concurrency usage of this API",
     "429",
   ];
 
