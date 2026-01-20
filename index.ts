@@ -76,7 +76,9 @@ function isRateLimitError(error: any): boolean {
     "quota exceeded",
     "resource exhausted",
     "usage limit",
-    "High concurrency usage of this API",
+    "high concurrency usage of this api",
+    "high concurrency",
+    "reduce concurrency",
     "429",
   ];
 
@@ -97,6 +99,8 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
   const rateLimitedModels = new Map<string, number>();
   const retryState = new Map<string, { attemptedModels: Set<string>; lastAttemptTime: number }>();
+  const currentSessionModel = new Map<string, { providerID: string; modelID: string }>();
+  const fallbackInProgress = new Map<string, number>(); // sessionID -> timestamp
 
   function isModelRateLimited(providerID: string, modelID: string): boolean {
     const key = getModelKey(providerID, modelID);
@@ -140,12 +144,28 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
   async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string) {
     try {
+      // Prevent duplicate fallback processing within 5 seconds
+      const lastFallback = fallbackInProgress.get(sessionID);
+      if (lastFallback && Date.now() - lastFallback < 5000) {
+        return;
+      }
+      fallbackInProgress.set(sessionID, Date.now());
+
+      // If no model info provided, try to get from tracked session model
+      if (!currentProviderID || !currentModelID) {
+        const tracked = currentSessionModel.get(sessionID);
+        if (tracked) {
+          currentProviderID = tracked.providerID;
+          currentModelID = tracked.modelID;
+        }
+      }
+
       await client.session.abort({ path: { id: sessionID } });
 
       await client.tui.showToast({
         body: {
           title: "Rate Limit Detected",
-          message: "Switching to fallback model...",
+          message: `Switching from ${currentModelID || 'current model'}...`,
           variant: "warning",
           duration: 3000,
         },
@@ -171,7 +191,17 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
       }
 
-      const nextModel = findNextAvailableModel(currentProviderID || "", currentModelID || "", state.attemptedModels);
+      let nextModel = findNextAvailableModel(currentProviderID || "", currentModelID || "", state.attemptedModels);
+
+      // If no model found and we've attempted models, reset and try again from the beginning
+      if (!nextModel && state.attemptedModels.size > 0) {
+        state.attemptedModels.clear();
+        // Keep the current model marked as attempted to avoid immediate retry
+        if (currentProviderID && currentModelID) {
+          state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
+        }
+        nextModel = findNextAvailableModel("", "", state.attemptedModels);
+      }
 
       if (!nextModel) {
         await client.tui.showToast({
@@ -209,6 +239,9 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         },
       });
 
+      // Track the new model for this session
+      currentSessionModel.set(sessionID, { providerID: nextModel.providerID, modelID: nextModel.modelID });
+
       await client.session.prompt({
         path: { id: sessionID },
         body: {
@@ -227,8 +260,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       });
 
       retryState.delete(stateKey);
+      // Clear fallback flag to allow next fallback if needed
+      fallbackInProgress.delete(sessionID);
     } catch (err) {
-      // Fallback failed silently
+      // Fallback failed, clear the flag
+      fallbackInProgress.delete(sessionID);
     }
   }
 
@@ -254,10 +290,15 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
         if (status?.type === "retry" && status?.message) {
           const message = status.message.toLowerCase();
-          if (message.includes("usage limit") || message.includes("rate limit")) {
-            if (status.attempt === 1) {
-              await handleRateLimitFallback(props.sessionID, "", "");
-            }
+          const isRateLimitRetry =
+            message.includes("usage limit") ||
+            message.includes("rate limit") ||
+            message.includes("high concurrency") ||
+            message.includes("reduce concurrency");
+
+          if (isRateLimitRetry) {
+            // Try fallback on any attempt, handleRateLimitFallback will manage state
+            await handleRateLimitFallback(props.sessionID, "", "");
           }
         }
       }
