@@ -26,9 +26,30 @@ interface PluginConfig {
   cooldownMs: number;
   enabled: boolean;
   fallbackMode: FallbackMode;
+  maxSubagentDepth?: number;
+  enableSubagentFallback?: boolean;
 }
 
+// Subagent fallback state types
+type FallbackState = "none" | "in_progress" | "completed";
 
+interface SubagentSession {
+  sessionID: string;
+  parentSessionID: string;
+  depth: number;  // Nesting level
+  fallbackState: FallbackState;
+  createdAt: number;
+  lastActivity: number;
+}
+
+interface SessionHierarchy {
+  rootSessionID: string;
+  subagents: Map<string, SubagentSession>;
+  sharedFallbackState: FallbackState;
+  sharedConfig: PluginConfig;
+  createdAt: number;
+  lastActivity: number;
+}
 
 // Event property types for type safety
 interface SessionErrorEventProperties {
@@ -81,6 +102,15 @@ function isSessionStatusEvent(event: { type: string; properties: unknown }): eve
   return event.type === "session.status" &&
     typeof event.properties === "object" &&
     event.properties !== null;
+}
+
+// Subagent event type guards
+function isSubagentSessionCreatedEvent(event: { type: string; properties?: unknown }): event is { type: "subagent.session.created"; properties: { sessionID: string; parentSessionID: string; [key: string]: unknown } } {
+  return event.type === "subagent.session.created" &&
+    typeof event.properties === "object" &&
+    event.properties !== null &&
+    "sessionID" in event.properties &&
+    "parentSessionID" in event.properties;
 }
 
 const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
@@ -201,6 +231,77 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const currentSessionModel = new Map<string, { providerID: string; modelID: string; lastUpdated: number }>();
   const fallbackInProgress = new Map<string, number>(); // sessionID -> timestamp
 
+  // Subagent session tracking
+  const sessionHierarchies = new Map<string, SessionHierarchy>(); // rootSessionID -> SessionHierarchy
+  const sessionToRootMap = new Map<string, string>(); // sessionID -> rootSessionID
+  const maxSubagentDepth = config.maxSubagentDepth ?? 10;
+
+  // Helper functions for session hierarchy management
+  function getOrCreateHierarchy(rootSessionID: string): SessionHierarchy {
+    let hierarchy = sessionHierarchies.get(rootSessionID);
+    if (!hierarchy) {
+      hierarchy = {
+        rootSessionID,
+        subagents: new Map(),
+        sharedFallbackState: "none",
+        sharedConfig: config,
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+      };
+      sessionHierarchies.set(rootSessionID, hierarchy);
+      sessionToRootMap.set(rootSessionID, rootSessionID);
+    }
+    return hierarchy;
+  }
+
+  function registerSubagent(sessionID: string, parentSessionID: string): boolean {
+    // Validate parent session exists
+    // Parent session must either be registered in sessionToRootMap or be a new root session
+    const parentRootSessionID = sessionToRootMap.get(parentSessionID);
+
+    // Determine root session - if parent doesn't exist, treat it as a new root
+    const rootSessionID = parentRootSessionID || parentSessionID;
+
+    // If parent is not a subagent but we're treating it as a root, create a hierarchy for it
+    // This allows sessions to become roots when their first subagent is registered
+    const hierarchy = getOrCreateHierarchy(rootSessionID);
+
+    const parentSubagent = hierarchy.subagents.get(parentSessionID);
+    const depth = parentSubagent ? parentSubagent.depth + 1 : 1;
+
+    // Enforce max depth
+    if (depth > maxSubagentDepth) {
+      if (process.env.NODE_ENV === "development") {
+        console.warn(`Subagent depth ${depth} exceeds max ${maxSubagentDepth}`);
+      }
+      return false;
+    }
+
+    const subagent: SubagentSession = {
+      sessionID,
+      parentSessionID,
+      depth,
+      fallbackState: "none",
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+    };
+
+    hierarchy.subagents.set(sessionID, subagent);
+    sessionToRootMap.set(sessionID, rootSessionID);
+    hierarchy.lastActivity = Date.now();
+
+    return true;
+  }
+
+  function getRootSession(sessionID: string): string | null {
+    return sessionToRootMap.get(sessionID) || null;
+  }
+
+  function getHierarchy(sessionID: string): SessionHierarchy | null {
+    const rootSessionID = getRootSession(sessionID);
+    return rootSessionID ? sessionHierarchies.get(rootSessionID) || null : null;
+  }
+
   // Cleanup stale session model entries (every 5 minutes)
   const cleanupInterval = setInterval(() => {
     const now = Date.now();
@@ -208,6 +309,18 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       // Remove entries older than 1 hour
       if (now - entry.lastUpdated > SESSION_ENTRY_TTL_MS) {
         currentSessionModel.delete(sessionID);
+      }
+    }
+
+    // Clean up stale session hierarchies
+    for (const [rootSessionID, hierarchy] of sessionHierarchies.entries()) {
+      if (now - hierarchy.lastActivity > SESSION_ENTRY_TTL_MS) {
+        // Clean up all subagents in this hierarchy
+        for (const subagentID of hierarchy.subagents.keys()) {
+          sessionToRootMap.delete(subagentID);
+        }
+        sessionHierarchies.delete(rootSessionID);
+        sessionToRootMap.delete(rootSessionID);
       }
     }
   }, CLEANUP_INTERVAL_MS);
@@ -256,17 +369,47 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   }
 
   async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string) {
+    // Determine the target session ID for fallback processing
+    // For subagent sessions, trigger fallback at the root level (parent-centered approach)
+    let targetSessionID = sessionID;
+
     try {
-      // Prevent duplicate fallback processing within DEDUP_WINDOW_MS
-      const lastFallback = fallbackInProgress.get(sessionID);
-      if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
-        return;
+      // Check if this is a subagent session
+      const hierarchy = getHierarchy(sessionID);
+      const rootSessionID = getRootSession(sessionID);
+
+      if (rootSessionID && hierarchy) {
+        targetSessionID = rootSessionID;
+
+        // If already processing fallback for this hierarchy, skip
+        const lastFallback = fallbackInProgress.get(targetSessionID);
+        if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
+          return;
+        }
+        fallbackInProgress.set(targetSessionID, Date.now());
+
+        // Update the shared fallback state
+        hierarchy.sharedFallbackState = "in_progress";
+        hierarchy.lastActivity = Date.now();
+
+        // Update the subagent's state
+        const subagent = hierarchy.subagents.get(sessionID);
+        if (subagent) {
+          subagent.fallbackState = "in_progress";
+          subagent.lastActivity = Date.now();
+        }
+      } else {
+        // Prevent duplicate fallback processing within DEDUP_WINDOW_MS for non-subagent sessions
+        const lastFallback = fallbackInProgress.get(targetSessionID);
+        if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
+          return;
+        }
+        fallbackInProgress.set(targetSessionID, Date.now());
       }
-      fallbackInProgress.set(sessionID, Date.now());
 
       // If no model info provided, try to get from tracked session model
       if (!currentProviderID || !currentModelID) {
-        const tracked = currentSessionModel.get(sessionID);
+        const tracked = currentSessionModel.get(targetSessionID);
         if (tracked) {
           currentProviderID = tracked.providerID;
           currentModelID = tracked.modelID;
@@ -275,7 +418,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       // Abort current session with error handling
       try {
-        await client.session.abort({ path: { id: sessionID } });
+        await client.session.abort({ path: { id: targetSessionID } });
       } catch (abortError) {
         // Log abort error but continue with fallback
         if (process.env.NODE_ENV === "development") {
@@ -292,16 +435,16 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         },
       });
 
-      const messagesResult = await client.session.messages({ path: { id: sessionID } });
+      const messagesResult = await client.session.messages({ path: { id: targetSessionID } });
       if (!messagesResult.data) {
-        fallbackInProgress.delete(sessionID);
+        fallbackInProgress.delete(targetSessionID);
         return;
       }
 
       const messages = messagesResult.data;
       const lastUserMessage = [...messages].reverse().find(m => m.info.role === "user");
       if (!lastUserMessage) {
-        fallbackInProgress.delete(sessionID);
+        fallbackInProgress.delete(targetSessionID);
         return;
       }
 
@@ -371,7 +514,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
           },
         });
         retryState.delete(stateKey);
-        fallbackInProgress.delete(sessionID);
+        fallbackInProgress.delete(targetSessionID);
         return;
       }
 
@@ -392,7 +535,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         .filter((p): p is MessagePart => p !== null);
 
       if (parts.length === 0) {
-        fallbackInProgress.delete(sessionID);
+        fallbackInProgress.delete(targetSessionID);
         return;
       }
 
@@ -406,11 +549,28 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       });
 
       // Track the new model for this session
-      currentSessionModel.set(sessionID, {
+      currentSessionModel.set(targetSessionID, {
         providerID: nextModel.providerID,
         modelID: nextModel.modelID,
         lastUpdated: Date.now(),
       });
+
+      // If this is a root session with subagents, propagate the model to all subagents
+      if (hierarchy && hierarchy.rootSessionID === targetSessionID) {
+        hierarchy.sharedFallbackState = "completed";
+        hierarchy.lastActivity = Date.now();
+
+        // Update model tracking for all subagents
+        for (const [subagentID, subagent] of hierarchy.subagents.entries()) {
+          currentSessionModel.set(subagentID, {
+            providerID: nextModel.providerID,
+            modelID: nextModel.modelID,
+            lastUpdated: Date.now(),
+          });
+          subagent.fallbackState = "completed";
+          subagent.lastActivity = Date.now();
+        }
+      }
 
       // Convert internal MessagePart to SDK-compatible format
       const sdkParts = parts.map((part): TextPartInput | FilePartInput => {
@@ -427,7 +587,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       });
 
       await client.session.prompt({
-        path: { id: sessionID },
+        path: { id: targetSessionID },
         body: {
           parts: sdkParts,
           model: { providerID: nextModel.providerID, modelID: nextModel.modelID },
@@ -447,11 +607,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       // Explicitly clean up fallbackInProgress after cooldown period
       // This prevents memory leaks while maintaining the deduplication window
       setTimeout(() => {
-        fallbackInProgress.delete(sessionID);
+        fallbackInProgress.delete(targetSessionID);
       }, DEDUP_WINDOW_MS);
 
     } catch (err) {
-      fallbackInProgress.delete(sessionID);
+      fallbackInProgress.delete(targetSessionID);
       if (process.env.NODE_ENV === "development") {
         console.error("Fallback failed:", err);
       }
@@ -492,6 +652,19 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
           }
         }
       }
+
+      // Handle subagent session creation events
+      // Note: Using type assertion for subagent events since they may not be in the official Event union yet
+      const rawEvent = event as { type: string; properties?: unknown };
+      if (isSubagentSessionCreatedEvent(rawEvent)) {
+        const { sessionID, parentSessionID } = rawEvent.properties;
+        if (config.enableSubagentFallback !== false) {
+          registerSubagent(sessionID, parentSessionID);
+          if (process.env.NODE_ENV === "development") {
+            console.log(`Registered subagent ${sessionID} under parent ${parentSessionID}`);
+          }
+        }
+      }
     },
     // Cleanup function to prevent memory leaks
     cleanup: () => {
@@ -500,6 +673,10 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       if (index > -1) {
         activeCleanupIntervals.splice(index, 1);
       }
+
+      // Clean up all session hierarchies
+      sessionHierarchies.clear();
+      sessionToRootMap.clear();
     },
   };
 };

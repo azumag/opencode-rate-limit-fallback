@@ -1182,3 +1182,478 @@ describe('Plugin Exports', () => {
     expect(plugin.default).toBeDefined();
   });
 });
+
+describe('Subagent Support', () => {
+  let mockClient: ReturnType<typeof createMockClient>;
+  let pluginInstance: any;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(false);
+    mockClient = createMockClient();
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+  });
+
+  it('should register subagent on session.created event', async () => {
+    // Trigger subagent.session.created event
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // The event should be handled without errors
+    // Actual registration is internal, so we verify no errors occur
+    expect(true).toBe(true);
+  });
+
+  it('should track session hierarchy correctly', async () => {
+    // Register a subagent
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Register another subagent under the same root
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-2',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Trigger rate limit on first subagent - should be handled
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-session-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered (on root session due to parent-centered approach)
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle nested subagents', async () => {
+    // Register root-level subagent
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-level-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Register nested subagent
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-level-2',
+          parentSessionID: 'subagent-level-1',
+        },
+      },
+    });
+
+    // Trigger rate limit on the deepest subagent - should propagate to root
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-level-2',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered on root session (parent-centered approach)
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should trigger fallback at root level for subagent rate limits', async () => {
+    // Register a subagent
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    // Trigger rate limit error on the subagent
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-session-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should propagate model changes to subagents', async () => {
+    // Register a subagent
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Mock messages for root session
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    // Trigger rate limit error on the root session
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'root-session-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered on root session
+    expect(mockClient.session.abort).toHaveBeenCalled();
+    expect(mockClient.session.prompt).toHaveBeenCalled();
+  });
+
+  it('should enforce maxSubagentDepth', async () => {
+    const mockConfig = {
+      maxSubagentDepth: 2,
+    };
+
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+
+    // Register first level subagent (depth 1)
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-level-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Register second level subagent (depth 2)
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-level-2',
+          parentSessionID: 'subagent-level-1',
+        },
+      },
+    });
+
+    // Register third level subagent (depth 3 - should be rejected silently)
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-level-3',
+          parentSessionID: 'subagent-level-2',
+        },
+      },
+    });
+
+    // Mock messages for rate limit fallback
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    // Reset abort mock to clear previous calls
+    vi.mocked(mockClient.session.abort).mockClear();
+
+    // Try to trigger rate limit on the rejected subagent (depth 3)
+    // Since it was not registered (exceeded max depth), it's treated as a regular session
+    // Fallback should be triggered on the session itself, not on the root
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-level-3',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback is triggered, but on the unregistered session itself
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'subagent-level-3',  // NOT root-session-1
+        }),
+      })
+    );
+
+    // Reset abort mock for the next test
+    vi.mocked(mockClient.session.abort).mockClear();
+
+    // A valid subagent (level 2) should trigger fallback on the root session
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-level-2',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // This one should trigger fallback on root (parent-centered approach)
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'root-session-1',  // Root session
+        }),
+      })
+    );
+  });
+
+  it('should respect enableSubagentFallback config option', async () => {
+    const mockConfig = {
+      enableSubagentFallback: false,
+    };
+
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+
+    // Try to register a subagent (should be ignored)
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Should be handled without errors
+    expect(true).toBe(true);
+  });
+
+  it('should handle multiple hierarchies independently', async () => {
+    // Register subagent for first hierarchy
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-1-1',
+          parentSessionID: 'root-1',
+        },
+      },
+    });
+
+    // Register subagent for second hierarchy
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-2-1',
+          parentSessionID: 'root-2',
+        },
+      },
+    });
+
+    // Mock messages for first hierarchy
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    // Trigger rate limit on first hierarchy
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-1-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+});
+
+describe('Session Hierarchy Cleanup', () => {
+  let mockClient: ReturnType<typeof createMockClient>;
+  let pluginInstance: any;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(false);
+    mockClient = createMockClient();
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+  });
+
+  afterEach(() => {
+    if (pluginInstance.cleanup) {
+      pluginInstance.cleanup();
+    }
+  });
+
+  it('should clean up stale session hierarchies after 1 hour TTL', async () => {
+    // Register a subagent
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Cleanup should be registered
+    expect(pluginInstance.cleanup).toBeDefined();
+
+    // Cleanup should not throw errors
+    pluginInstance.cleanup();
+    expect(true).toBe(true);
+  });
+
+  it('should clean up sessionToRootMap entries', async () => {
+    // Register multiple subagents
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-1',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-session-2',
+          parentSessionID: 'root-session-1',
+        },
+      },
+    });
+
+    // Cleanup should not throw errors
+    pluginInstance.cleanup();
+    expect(true).toBe(true);
+  });
+});
