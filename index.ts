@@ -151,14 +151,25 @@ function getModelKey(providerID: string, modelID: string): string {
 function isRateLimitError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
 
-  const err = error as Record<string, unknown>;
+  // More type-safe error object structure
+  const err = error as {
+    name?: string;
+    message?: string;
+    data?: {
+      statusCode?: number;
+      message?: string;
+      responseBody?: string;
+    };
+  };
 
-  if (err.name === "APIError" && (err.data as Record<string, unknown>)?.statusCode === 429) {
+  // Check for 429 status code in APIError
+  if (err.name === "APIError" && err.data?.statusCode === 429) {
     return true;
   }
 
-  const responseBody = String((err.data as Record<string, unknown>)?.responseBody || "").toLowerCase();
-  const message = String((err.data as Record<string, unknown>)?.message || err.message || "").toLowerCase();
+  // Type-safe access to error fields
+  const responseBody = String(err.data?.responseBody || "").toLowerCase();
+  const message = String(err.data?.message || err.message || "").toLowerCase();
   const errorName = String(err.name || "").toLowerCase();
 
   return RATE_LIMIT_INDICATORS.some(
@@ -169,6 +180,15 @@ function isRateLimitError(error: unknown): boolean {
   );
 }
 
+// Constants for deduplication and state management
+const DEDUP_WINDOW_MS = 5000;
+const STATE_TIMEOUT_MS = 30000;
+const CLEANUP_INTERVAL_MS = 300000; // 5 minutes
+const SESSION_ENTRY_TTL_MS = 3600000; // 1 hour
+
+// Track cleanup intervals globally to prevent TypeScript warnings
+const activeCleanupIntervals: NodeJS.Timeout[] = [];
+
 export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const config = loadConfig(directory);
 
@@ -178,8 +198,20 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
   const rateLimitedModels = new Map<string, number>();
   const retryState = new Map<string, { attemptedModels: Set<string>; lastAttemptTime: number }>();
-  const currentSessionModel = new Map<string, { providerID: string; modelID: string }>();
+  const currentSessionModel = new Map<string, { providerID: string; modelID: string; lastUpdated: number }>();
   const fallbackInProgress = new Map<string, number>(); // sessionID -> timestamp
+
+  // Cleanup stale session model entries (every 5 minutes)
+  const cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [sessionID, entry] of currentSessionModel.entries()) {
+      // Remove entries older than 1 hour
+      if (now - entry.lastUpdated > SESSION_ENTRY_TTL_MS) {
+        currentSessionModel.delete(sessionID);
+      }
+    }
+  }, CLEANUP_INTERVAL_MS);
+  activeCleanupIntervals.push(cleanupInterval);
 
   function isModelRateLimited(providerID: string, modelID: string): boolean {
     const key = getModelKey(providerID, modelID);
@@ -201,7 +233,10 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
     const currentKey = getModelKey(currentProviderID, currentModelID);
     const startIndex = config.fallbackModels.findIndex(m => getModelKey(m.providerID, m.modelID) === currentKey);
 
-    for (let i = startIndex + 1; i < config.fallbackModels.length; i++) {
+    // If current model is not in the fallback list (startIndex is -1), start from 0
+    const searchStartIndex = Math.max(0, startIndex);
+
+    for (let i = searchStartIndex + 1; i < config.fallbackModels.length; i++) {
       const model = config.fallbackModels[i];
       const key = getModelKey(model.providerID, model.modelID);
       if (!attemptedModels.has(key) && !isModelRateLimited(model.providerID, model.modelID)) {
@@ -209,7 +244,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       }
     }
 
-    for (let i = 0; i <= startIndex && i < config.fallbackModels.length; i++) {
+    for (let i = 0; i <= searchStartIndex && i < config.fallbackModels.length; i++) {
       const model = config.fallbackModels[i];
       const key = getModelKey(model.providerID, model.modelID);
       if (!attemptedModels.has(key) && !isModelRateLimited(model.providerID, model.modelID)) {
@@ -222,9 +257,9 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
   async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string) {
     try {
-      // Prevent duplicate fallback processing within 5 seconds
+      // Prevent duplicate fallback processing within DEDUP_WINDOW_MS
       const lastFallback = fallbackInProgress.get(sessionID);
-      if (lastFallback && Date.now() - lastFallback < 5000) {
+      if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
         return;
       }
       fallbackInProgress.set(sessionID, Date.now());
@@ -238,7 +273,15 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         }
       }
 
-      void client.session.abort({ path: { id: sessionID } });
+      // Abort current session with error handling
+      try {
+        await client.session.abort({ path: { id: sessionID } });
+      } catch (abortError) {
+        // Log abort error but continue with fallback
+        if (process.env.NODE_ENV === "development") {
+          console.warn("Failed to abort session:", abortError);
+        }
+      }
 
       await client.tui.showToast({
         body: {
@@ -257,12 +300,15 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       const messages = messagesResult.data;
       const lastUserMessage = [...messages].reverse().find(m => m.info.role === "user");
-      if (!lastUserMessage) return;
+      if (!lastUserMessage) {
+        fallbackInProgress.delete(sessionID);
+        return;
+      }
 
       const stateKey = `${sessionID}:${lastUserMessage.info.id}`;
       let state = retryState.get(stateKey);
 
-      if (!state || Date.now() - state.lastAttemptTime > 30000) {
+      if (!state || Date.now() - state.lastAttemptTime > STATE_TIMEOUT_MS) {
         state = { attemptedModels: new Set<string>(), lastAttemptTime: Date.now() };
         retryState.set(stateKey, state);
       }
@@ -360,7 +406,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       });
 
       // Track the new model for this session
-      currentSessionModel.set(sessionID, { providerID: nextModel.providerID, modelID: nextModel.modelID });
+      currentSessionModel.set(sessionID, {
+        providerID: nextModel.providerID,
+        modelID: nextModel.modelID,
+        lastUpdated: Date.now(),
+      });
 
       // Convert internal MessagePart to SDK-compatible format
       const sdkParts = parts.map((part): TextPartInput | FilePartInput => {
@@ -394,8 +444,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       });
 
       retryState.delete(stateKey);
-      // Clear fallback flag to allow next fallback if needed
-      // fallbackInProgress.delete(sessionID); // Removed to enforce 5s cooldown
+      // Explicitly clean up fallbackInProgress after cooldown period
+      // This prevents memory leaks while maintaining the deduplication window
+      setTimeout(() => {
+        fallbackInProgress.delete(sessionID);
+      }, DEDUP_WINDOW_MS);
 
     } catch (err) {
       fallbackInProgress.delete(sessionID);
@@ -438,6 +491,14 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
             await handleRateLimitFallback(props.sessionID, "", "");
           }
         }
+      }
+    },
+    // Cleanup function to prevent memory leaks
+    cleanup: () => {
+      clearInterval(cleanupInterval);
+      const index = activeCleanupIntervals.indexOf(cleanupInterval);
+      if (index > -1) {
+        activeCleanupIntervals.splice(index, 1);
       }
     },
   };

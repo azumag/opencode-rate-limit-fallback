@@ -3,3 +3,5 @@ bun.lock
 *.log
 .DS_Store
 dist/
+tmp/*
+coverage/
