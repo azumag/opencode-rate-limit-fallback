@@ -1,6 +1,12 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import type { TextPartInput, FilePartInput } from "@opencode-ai/sdk";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+
+// Type definitions for OpenCode plugin API - based on actual SDK types
+type TextPart = { type: "text"; text: string };
+type FilePart = { type: "file"; path: string; mediaType: string };
+type MessagePart = TextPart | FilePart;
 
 interface FallbackModel {
   providerID: string;
@@ -22,11 +28,82 @@ interface PluginConfig {
   fallbackMode: FallbackMode;
 }
 
+
+
+// Event property types for type safety
+interface SessionErrorEventProperties {
+  sessionID: string;
+  error: unknown;
+}
+
+interface MessageUpdatedEventInfo {
+  sessionID: string;
+  providerID?: string;
+  modelID?: string;
+  error?: unknown;
+  [key: string]: unknown;
+}
+
+interface MessageUpdatedEventProperties {
+  info: MessageUpdatedEventInfo;
+  [key: string]: unknown;
+}
+
+interface SessionRetryStatus {
+  type: string;
+  message: string;
+  [key: string]: unknown;
+}
+
+interface SessionStatusEventProperties {
+  sessionID: string;
+  status?: SessionRetryStatus;
+  [key: string]: unknown;
+}
+
+// Event type guards
+function isSessionErrorEvent(event: { type: string; properties: unknown }): event is { type: "session.error"; properties: SessionErrorEventProperties } {
+  return event.type === "session.error" &&
+    typeof event.properties === "object" &&
+    event.properties !== null &&
+    "sessionID" in event.properties &&
+    "error" in event.properties;
+}
+
+function isMessageUpdatedEvent(event: { type: string; properties: unknown }): event is { type: "message.updated"; properties: MessageUpdatedEventProperties } {
+  return event.type === "message.updated" &&
+    typeof event.properties === "object" &&
+    event.properties !== null &&
+    "info" in event.properties;
+}
+
+function isSessionStatusEvent(event: { type: string; properties: unknown }): event is { type: "session.status"; properties: SessionStatusEventProperties } {
+  return event.type === "session.status" &&
+    typeof event.properties === "object" &&
+    event.properties !== null;
+}
+
 const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
   { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
   { providerID: "google", modelID: "gemini-2.5-pro" },
   { providerID: "google", modelID: "gemini-2.5-flash" },
 ];
+
+const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last"];
+
+const RATE_LIMIT_INDICATORS = [
+  "rate limit",
+  "rate_limit",
+  "ratelimit",
+  "too many requests",
+  "quota exceeded",
+  "resource exhausted",
+  "usage limit",
+  "high concurrency usage of this api",
+  "high concurrency",
+  "reduce concurrency",
+  "429",
+] as const;
 
 const DEFAULT_CONFIG: PluginConfig = {
   fallbackModels: DEFAULT_FALLBACK_MODELS,
@@ -50,15 +127,16 @@ function loadConfig(directory: string): PluginConfig {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content);
         const mode = userConfig.fallbackMode;
-        const validModes: FallbackMode[] = ["cycle", "stop", "retry-last"];
         return {
           ...DEFAULT_CONFIG,
           ...userConfig,
           fallbackModels: userConfig.fallbackModels || DEFAULT_CONFIG.fallbackModels,
-          fallbackMode: validModes.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
+          fallbackMode: VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
         };
       } catch (error) {
-        // Config load failed, continue to next path
+        if (process.env.NODE_ENV === "development") {
+          console.warn(`Failed to load config from ${configPath}:`, error);
+        }
       }
     }
   }
@@ -70,32 +148,20 @@ function getModelKey(providerID: string, modelID: string): string {
   return `${providerID}/${modelID}`;
 }
 
-function isRateLimitError(error: any): boolean {
-  if (!error) return false;
+function isRateLimitError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
 
-  if (error.name === "APIError" && error.data?.statusCode === 429) {
+  const err = error as Record<string, unknown>;
+
+  if (err.name === "APIError" && (err.data as Record<string, unknown>)?.statusCode === 429) {
     return true;
   }
 
-  const responseBody = (error.data?.responseBody || "").toLowerCase();
-  const message = (error.data?.message || error.message || "").toLowerCase();
-  const errorName = (error.name || "").toLowerCase();
+  const responseBody = String((err.data as Record<string, unknown>)?.responseBody || "").toLowerCase();
+  const message = String((err.data as Record<string, unknown>)?.message || err.message || "").toLowerCase();
+  const errorName = String(err.name || "").toLowerCase();
 
-  const rateLimitIndicators = [
-    "rate limit",
-    "rate_limit",
-    "ratelimit",
-    "too many requests",
-    "quota exceeded",
-    "resource exhausted",
-    "usage limit",
-    "high concurrency usage of this api",
-    "high concurrency",
-    "reduce concurrency",
-    "429",
-  ];
-
-  return rateLimitIndicators.some(
+  return RATE_LIMIT_INDICATORS.some(
     (indicator) =>
       responseBody.includes(indicator) ||
       message.includes(indicator) ||
@@ -133,8 +199,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
   function findNextAvailableModel(currentProviderID: string, currentModelID: string, attemptedModels: Set<string>): FallbackModel | null {
     const currentKey = getModelKey(currentProviderID, currentModelID);
-    let startIndex = config.fallbackModels.findIndex(m => getModelKey(m.providerID, m.modelID) === currentKey);
-    if (startIndex === -1) startIndex = -1;
+    const startIndex = config.fallbackModels.findIndex(m => getModelKey(m.providerID, m.modelID) === currentKey);
 
     for (let i = startIndex + 1; i < config.fallbackModels.length; i++) {
       const model = config.fallbackModels[i];
@@ -173,7 +238,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         }
       }
 
-      await client.session.abort({ path: { id: sessionID } });
+      void client.session.abort({ path: { id: sessionID } });
 
       await client.tui.showToast({
         body: {
@@ -185,7 +250,10 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       });
 
       const messagesResult = await client.session.messages({ path: { id: sessionID } });
-      if (!messagesResult.data) return;
+      if (!messagesResult.data) {
+        fallbackInProgress.delete(sessionID);
+        return;
+      }
 
       const messages = messagesResult.data;
       const lastUserMessage = [...messages].reverse().find(m => m.info.role === "user");
@@ -264,16 +332,23 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       state.attemptedModels.add(getModelKey(nextModel.providerID, nextModel.modelID));
       state.lastAttemptTime = Date.now();
 
-      const parts = lastUserMessage.parts
-        .filter((p: any) => p.type === "text" || p.type === "file")
-        .map((p: any) => {
-          if (p.type === "text") return { type: "text" as const, text: p.text };
-          if (p.type === "file") return { type: "file" as const, path: p.path, mediaType: p.mediaType };
+      const parts: MessagePart[] = lastUserMessage.parts
+        .filter((p: unknown) => {
+          const part = p as Record<string, unknown>;
+          return part.type === "text" || part.type === "file";
+        })
+        .map((p: unknown): MessagePart | null => {
+          const part = p as Record<string, unknown>;
+          if (part.type === "text") return { type: "text" as const, text: String(part.text) };
+          if (part.type === "file") return { type: "file" as const, path: String(part.path), mediaType: String(part.mediaType) };
           return null;
         })
-        .filter(Boolean);
+        .filter((p): p is MessagePart => p !== null);
 
-      if (parts.length === 0) return;
+      if (parts.length === 0) {
+        fallbackInProgress.delete(sessionID);
+        return;
+      }
 
       await client.tui.showToast({
         body: {
@@ -287,10 +362,24 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       // Track the new model for this session
       currentSessionModel.set(sessionID, { providerID: nextModel.providerID, modelID: nextModel.modelID });
 
+      // Convert internal MessagePart to SDK-compatible format
+      const sdkParts = parts.map((part): TextPartInput | FilePartInput => {
+        if (part.type === "text") {
+          return { type: "text", text: part.text };
+        }
+        // For file parts, we need to match the FilePartInput format
+        // Using path as url since we're dealing with local files
+        return {
+          type: "file",
+          url: part.path,
+          mime: part.mediaType || "application/octet-stream",
+        };
+      });
+
       await client.session.prompt({
         path: { id: sessionID },
         body: {
-          parts: parts as any,
+          parts: sdkParts,
           model: { providerID: nextModel.providerID, modelID: nextModel.modelID },
         },
       });
@@ -306,31 +395,34 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       retryState.delete(stateKey);
       // Clear fallback flag to allow next fallback if needed
-      fallbackInProgress.delete(sessionID);
+      // fallbackInProgress.delete(sessionID); // Removed to enforce 5s cooldown
+
     } catch (err) {
-      // Fallback failed, clear the flag
       fallbackInProgress.delete(sessionID);
+      if (process.env.NODE_ENV === "development") {
+        console.error("Fallback failed:", err);
+      }
     }
   }
 
   return {
     event: async ({ event }) => {
-      if (event.type === "session.error") {
-        const { sessionID, error } = event.properties as any;
+      if (isSessionErrorEvent(event)) {
+        const { sessionID, error } = event.properties;
         if (sessionID && error && isRateLimitError(error)) {
           await handleRateLimitFallback(sessionID, "", "");
         }
       }
 
-      if (event.type === "message.updated") {
-        const info = (event.properties as any)?.info;
+      if (isMessageUpdatedEvent(event)) {
+        const info = event.properties.info;
         if (info?.error && isRateLimitError(info.error)) {
           await handleRateLimitFallback(info.sessionID, info.providerID || "", info.modelID || "");
         }
       }
 
-      if (event.type === "session.status") {
-        const props = event.properties as any;
+      if (isSessionStatusEvent(event)) {
+        const props = event.properties;
         const status = props?.status;
 
         if (status?.type === "retry" && status?.message) {

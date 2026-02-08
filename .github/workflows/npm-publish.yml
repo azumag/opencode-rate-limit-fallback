@@ -40,11 +40,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: dawidd6/action-download-artifact@v3
         with:
           name: dist
           path: dist/
-          run-id: ${{ github.event.workflow_run.id }}
+          run_id: ${{ github.event.workflow_run.id }}
       
       - run: npm publish --access public
         env:
