@@ -219,7 +219,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
           // Try the last model in the list once, then reset on next prompt
           const lastModel = config.fallbackModels[config.fallbackModels.length - 1];
           if (lastModel) {
-            const lastKey = getModelKey(lastModel.providerID, lastModel.modelID);
             const isLastModelCurrent = currentProviderID === lastModel.providerID && currentModelID === lastModel.modelID;
 
             if (!isLastModelCurrent && !isModelRateLimited(lastModel.providerID, lastModel.modelID)) {
