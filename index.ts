@@ -164,9 +164,7 @@ function loadConfig(directory: string): PluginConfig {
           fallbackMode: VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
         };
       } catch (error) {
-        if (process.env.NODE_ENV === "development") {
-          console.warn(`Failed to load config from ${configPath}:`, error);
-        }
+        // Silently ignore config load errors
       }
     }
   }
@@ -271,9 +269,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
     // Enforce max depth
     if (depth > maxSubagentDepth) {
-      if (process.env.NODE_ENV === "development") {
-        console.warn(`Subagent depth ${depth} exceeds max ${maxSubagentDepth}`);
-      }
       return false;
     }
 
@@ -420,10 +415,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       try {
         await client.session.abort({ path: { id: targetSessionID } });
       } catch (abortError) {
-        // Log abort error but continue with fallback
-        if (process.env.NODE_ENV === "development") {
-          console.warn("Failed to abort session:", abortError);
-        }
+        // Silently ignore abort errors and continue with fallback
       }
 
       await client.tui.showToast({
@@ -612,9 +604,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
     } catch (err) {
       fallbackInProgress.delete(targetSessionID);
-      if (process.env.NODE_ENV === "development") {
-        console.error("Fallback failed:", err);
-      }
+      // Silently ignore fallback errors
     }
   }
 
@@ -660,9 +650,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         const { sessionID, parentSessionID } = rawEvent.properties;
         if (config.enableSubagentFallback !== false) {
           registerSubagent(sessionID, parentSessionID);
-          if (process.env.NODE_ENV === "development") {
-            console.log(`Registered subagent ${sessionID} under parent ${parentSessionID}`);
-          }
         }
       }
     },
