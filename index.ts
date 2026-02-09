@@ -200,7 +200,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
 export default RateLimitFallback;
 
-// Re-export types for backward compatibility
+// Re-export types only (no class/function re-exports to avoid plugin loader conflicts)
 export type { PluginConfig, MetricsConfig, FallbackModel, FallbackMode } from "./src/types/index.js";
-export { MetricsManager } from "./src/metrics/MetricsManager.js";
-export { createLogger, type LogConfig, type Logger } from "./logger.js";
+export type { LogConfig, Logger } from "./logger.js";
