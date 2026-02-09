@@ -685,46 +685,6 @@ describe('State Management', () => {
     pluginInstance = result;
   });
 
-  it('should prevent duplicate fallback within 5 seconds', async () => {
-    vi.mocked(mockClient.session.messages).mockResolvedValue({
-      data: [
-        {
-          info: { id: 'msg1', role: 'user' },
-          parts: [{ type: 'text', text: 'test message' }],
-        },
-      ],
-    });
-
-    // First call
-    await pluginInstance.event?.({
-      event: {
-        type: 'session.error',
-        properties: {
-          sessionID: 'test-session',
-          error: { name: "APIError", data: { statusCode: 429 } },
-        },
-      },
-    });
-
-    const firstCallCount = mockClient.session.abort.mock.calls.length;
-
-    // Second immediate call (should be prevented)
-    await pluginInstance.event?.({
-      event: {
-        type: 'session.error',
-        properties: {
-          sessionID: 'test-session',
-          error: { name: "APIError", data: { statusCode: 429 } },
-        },
-      },
-    });
-
-    const secondCallCount = mockClient.session.abort.mock.calls.length;
-
-    // Should only be called once (the second call is prevented by 5s cooldown)
-    expect(secondCallCount).toBe(firstCallCount);
-  });
-
   it('should track current model for session', async () => {
     vi.mocked(mockClient.session.messages).mockResolvedValue({
       data: [
@@ -2200,5 +2160,196 @@ describe('isRateLimitError Edge Cases', () => {
     });
 
     expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+});
+
+describe('Multiple Fallback Scenarios (Message Scope)', () => {
+  let mockClient: any;
+  let pluginInstance: any;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(false);
+    mockClient = createMockClient();
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+  });
+
+  it('should handle consecutive fallbacks on different messages in the same session', async () => {
+    // First fallback on message 1
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'first message' }],
+        },
+      ],
+    });
+
+    const error1 = { name: "APIError", data: { statusCode: 429 } };
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error: error1 },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalledTimes(1);
+
+    // Simulate message 1 completion
+    await pluginInstance.event?.({
+      event: {
+        type: 'message.updated',
+        properties: {
+          info: { id: 'msg1', sessionID: 'test-session', role: 'user', status: 'completed' },
+        },
+      },
+    });
+
+    // Reset mocks for second fallback
+    vi.mocked(mockClient.session.abort).mockClear();
+    vi.mocked(mockClient.session.prompt).mockClear();
+
+    // Second fallback on message 2 (same session, different message)
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'first message' }],
+        },
+        {
+          info: { id: 'msg2', role: 'user' },
+          parts: [{ type: 'text', text: 'second message' }],
+        },
+      ],
+    });
+
+    const error2 = { name: "APIError", data: { statusCode: 429 } };
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error: error2 },
+      },
+    });
+
+    // Should trigger fallback for second message (not skipped due to first fallback)
+    expect(mockClient.session.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it('should allow fallback on same message after dedup window expires', async () => {
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    const error = { name: "APIError", data: { statusCode: 429 } };
+
+    // First fallback
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalledTimes(1);
+
+    // Wait for dedup window to expire (6 seconds > 5 seconds window)
+    await new Promise(resolve => setTimeout(resolve, 6000));
+
+    // Reset mocks
+    vi.mocked(mockClient.session.abort).mockClear();
+    vi.mocked(mockClient.session.prompt).mockClear();
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    // Second fallback after dedup window (should not be skipped)
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    }, 10000); // Extend timeout to 10s
+
+    // Abort should be called again
+    expect(mockClient.session.abort).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('should clear fallback in progress when message completes successfully', async () => {
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    const error = { name: "APIError", data: { statusCode: 429 } };
+
+    // Trigger fallback
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    // Simulate message completion
+    await pluginInstance.event?.({
+      event: {
+        type: 'message.updated',
+        properties: {
+          info: { id: 'msg1', sessionID: 'test-session', role: 'user', status: 'completed' },
+        },
+      },
+    });
+
+    // Reset mocks for next fallback
+    vi.mocked(mockClient.session.abort).mockClear();
+    vi.mocked(mockClient.session.prompt).mockClear();
+    vi.mocked(mockClient.session.messages).mockClear();
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    // New error should trigger fallback (not skipped)
+    const error2 = { name: "APIError", data: { statusCode: 429 } };
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error: error2 },
+      },
+    });
+
+    // Should trigger fallback
+    expect(mockClient.session.abort).toHaveBeenCalledTimes(1);
   });
 });

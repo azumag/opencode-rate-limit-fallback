@@ -270,8 +270,17 @@ const safeShowToast = async (client: any, toast: any) => {
 export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const config = loadConfig(directory);
 
+  // Detect headless mode (no TUI)
+  const isHeadless = !client.tui;
+
+  // Auto-adjust log level for headless mode to ensure visibility
+  const logConfig = {
+    ...config.log,
+    level: isHeadless ? 'info' : config.log.level,
+  };
+
   // Create logger instance
-  const logger = createLogger(config.log, "RateLimitFallback");
+  const logger = createLogger(logConfig, "RateLimitFallback");
 
   // Log config load errors (if any) after logger is initialized
   const homedir = process.env.HOME || "";
@@ -299,7 +308,8 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const rateLimitedModels = new Map<string, number>();
   const retryState = new Map<string, { attemptedModels: Set<string>; lastAttemptTime: number }>();
   const currentSessionModel = new Map<string, { providerID: string; modelID: string; lastUpdated: number }>();
-  const fallbackInProgress = new Map<string, number>(); // sessionID -> timestamp
+  const fallbackInProgress = new Map<string, number>(); // sessionID:messageID -> timestamp (message scope)
+  const fallbackMessages = new Map<string, { sessionID: string; messageID: string; timestamp: number }>(); // Track fallback messages for completion detection
 
   // Subagent session tracking
   const sessionHierarchies = new Map<string, SessionHierarchy>(); // rootSessionID -> SessionHierarchy
@@ -397,6 +407,14 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         retryState.delete(stateKey);
       }
     }
+
+    // Clean up stale fallback messages
+    for (const [fallbackKey, fallbackInfo] of fallbackMessages.entries()) {
+      if (now - fallbackInfo.timestamp > SESSION_ENTRY_TTL_MS) {
+        fallbackInProgress.delete(fallbackKey);
+        fallbackMessages.delete(fallbackKey);
+      }
+    }
   }, CLEANUP_INTERVAL_MS);
 
   function isModelRateLimited(providerID: string, modelID: string): boolean {
@@ -443,29 +461,32 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
   /**
    * Check and mark fallback in progress for deduplication.
+   * Uses message scope (sessionID:messageID) for better tracking.
    * Returns true if processing should continue, false if it should be skipped.
    */
-  function checkAndMarkFallbackInProgress(sessionID: string): boolean {
-    const lastFallback = fallbackInProgress.get(sessionID);
+  function checkAndMarkFallbackInProgress(sessionID: string, messageID: string): boolean {
+    const key = getStateKey(sessionID, messageID);
+    const lastFallback = fallbackInProgress.get(key);
     if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
       return false; // Skip - already processing
     }
-    fallbackInProgress.set(sessionID, Date.now());
+    fallbackInProgress.set(key, Date.now());
     return true; // Continue processing
   }
 
   /**
    * Resolve the target session for fallback processing.
    * For subagent sessions, the target is the root session (parent-centered approach).
+   * Uses message scope (sessionID:messageID) for deduplication.
    * Updates hierarchy state and returns { targetSessionID, hierarchy }.
    */
-  function resolveTargetSessionWithDedup(sessionID: string): { targetSessionID: string; hierarchy: SessionHierarchy | null } | null {
+  function resolveTargetSessionWithDedup(sessionID: string, messageID: string): { targetSessionID: string; hierarchy: SessionHierarchy | null } | null {
     const hierarchy = getHierarchy(sessionID);
     const rootSessionID = getRootSession(sessionID);
 
     if (rootSessionID && hierarchy) {
-      // Check deduplication
-      if (!checkAndMarkFallbackInProgress(rootSessionID)) {
+      // Check deduplication with message scope
+      if (!checkAndMarkFallbackInProgress(rootSessionID, messageID)) {
         return null; // Skip - already processing
       }
 
@@ -482,8 +503,8 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       return { targetSessionID: rootSessionID, hierarchy };
     } else {
-      // Prevent duplicate fallback processing for non-subagent sessions
-      if (!checkAndMarkFallbackInProgress(sessionID)) {
+      // Prevent duplicate fallback processing for non-subagent sessions with message scope
+      if (!checkAndMarkFallbackInProgress(sessionID, messageID)) {
         return null; // Skip - already processing
       }
 
@@ -671,16 +692,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   }
 
   async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string): Promise<void> {
-    // Resolve the target session for fallback processing
-    const resolution = resolveTargetSessionWithDedup(sessionID);
-    if (!resolution) {
-      return; // Skipped due to deduplication
-    }
-
-    const { targetSessionID, hierarchy } = resolution;
-
     try {
       // If no model info provided, try to get from tracked session model
+      const rootSessionID = getRootSession(sessionID);
+      const targetSessionID = rootSessionID || sessionID;
+
       if (!currentProviderID || !currentModelID) {
         const tracked = currentSessionModel.get(targetSessionID);
         if (tracked) {
@@ -709,20 +725,25 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       // Get messages from the session
       const messagesResult = await client.session.messages({ path: { id: targetSessionID } });
       if (!messagesResult.data) {
-        fallbackInProgress.delete(targetSessionID);
         return;
       }
 
       const messages = messagesResult.data;
       const lastUserMessage = [...messages].reverse().find(m => m.info.role === "user");
       if (!lastUserMessage) {
-        fallbackInProgress.delete(targetSessionID);
         return;
+      }
+
+      // Resolve the target session for fallback processing with message scope
+      const resolution = resolveTargetSessionWithDedup(sessionID, lastUserMessage.info.id);
+      if (!resolution) {
+        return; // Skipped due to deduplication
       }
 
       // Get or create retry state for this message
       const state = getOrCreateRetryState(sessionID, lastUserMessage.info.id);
       const stateKey = getStateKey(sessionID, lastUserMessage.info.id);
+      const fallbackKey = getStateKey(resolution.targetSessionID, lastUserMessage.info.id);
 
       // Select the next fallback model
       const nextModel = await selectFallbackModel(currentProviderID, currentModelID, state);
@@ -740,7 +761,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
           },
         });
         retryState.delete(stateKey);
-        fallbackInProgress.delete(targetSessionID);
+        fallbackInProgress.delete(fallbackKey);
         return;
       }
 
@@ -751,7 +772,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       const parts = extractMessageParts(lastUserMessage);
 
       if (parts.length === 0) {
-        fallbackInProgress.delete(targetSessionID);
+        fallbackInProgress.delete(fallbackKey);
         return;
       }
 
@@ -764,28 +785,22 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         },
       });
 
+      // Track this message as a fallback message for completion detection
+      // Note: The new message will have a new ID after prompting, but we use the original message ID
+      // to correlate with the fallback in progress state
+      fallbackMessages.set(fallbackKey, {
+        sessionID: resolution.targetSessionID,
+        messageID: lastUserMessage.info.id,
+        timestamp: Date.now(),
+      });
+
       // Retry with the selected model
-      await retryWithModel(targetSessionID, nextModel, parts, hierarchy);
+      await retryWithModel(resolution.targetSessionID, nextModel, parts, resolution.hierarchy);
 
       // Clean up state
       retryState.delete(stateKey);
 
-      // Explicitly clean up fallbackInProgress after cooldown period
-      // This prevents memory leaks while maintaining the deduplication window
-      // Track the timer for cleanup
-      const timerKey = `${targetSessionID}_fallback`;
-      const existingTimer = activeFallbackTimers.get(timerKey);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-      }
-      const timer = setTimeout(() => {
-        fallbackInProgress.delete(targetSessionID);
-        activeFallbackTimers.delete(timerKey);
-      }, DEDUP_WINDOW_MS);
-      activeFallbackTimers.set(timerKey, timer);
-
     } catch (err) {
-      fallbackInProgress.delete(targetSessionID);
       // Silently ignore fallback errors - log only limited error info
       const errorMessage = err instanceof Error ? err.message : String(err);
       const errorName = err instanceof Error ? err.name : undefined;
@@ -809,6 +824,16 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         const info = event.properties.info;
         if (info?.error && isRateLimitError(info.error)) {
           await handleRateLimitFallback(info.sessionID, info.providerID || "", info.modelID || "");
+        } else if (info?.status === "completed" && !info?.error) {
+          // Check if this message is a fallback message and clear its in-progress state
+          const fallbackKey = getStateKey(info.sessionID, info.id);
+          const fallbackInfo = fallbackMessages.get(fallbackKey);
+          if (fallbackInfo) {
+            // Clear fallback in progress for this message
+            fallbackInProgress.delete(fallbackKey);
+            fallbackMessages.delete(fallbackKey);
+            logger.debug(`Fallback completed for message ${info.id}`, { sessionID: info.sessionID });
+          }
         }
       }
 
@@ -854,6 +879,9 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       // Clean up all session hierarchies
       sessionHierarchies.clear();
       sessionToRootMap.clear();
+
+      // Clean up fallback messages
+      fallbackMessages.clear();
     },
   };
 };
