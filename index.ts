@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import type { TextPartInput, FilePartInput } from "@opencode-ai/sdk";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { createLogger, type LogConfig } from "./logger.js";
 
 // Type definitions for OpenCode plugin API - based on actual SDK types
 type TextPart = { type: "text"; text: string };
@@ -28,6 +29,7 @@ interface PluginConfig {
   fallbackMode: FallbackMode;
   maxSubagentDepth?: number;
   enableSubagentFallback?: boolean;
+  log?: LogConfig;
 }
 
 // Subagent fallback state types
@@ -140,6 +142,11 @@ const DEFAULT_CONFIG: PluginConfig = {
   cooldownMs: 60 * 1000,
   enabled: true,
   fallbackMode: "cycle",
+  log: {
+    level: "warn",
+    format: "simple",
+    enableTimestamp: true,
+  },
 };
 
 function loadConfig(directory: string): PluginConfig {
@@ -162,12 +169,10 @@ function loadConfig(directory: string): PluginConfig {
           ...userConfig,
           fallbackModels: userConfig.fallbackModels || DEFAULT_CONFIG.fallbackModels,
           fallbackMode: VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
+          log: userConfig.log ? { ...DEFAULT_CONFIG.log, ...userConfig.log } : DEFAULT_CONFIG.log,
         };
       } catch (error) {
-        // Silently ignore config load errors
-        if (process.env.DEBUG) {
-          console.error(`[RateLimitFallback] Failed to load config from ${configPath}:`, error);
-        }
+        // Silently ignore config load errors - will be logged after logger is initialized
       }
     }
   }
@@ -226,6 +231,28 @@ const activeFallbackTimers: Map<string, NodeJS.Timeout> = new Map();
 
 export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const config = loadConfig(directory);
+
+  // Create logger instance
+  const logger = createLogger(config.log, "RateLimitFallback");
+
+  // Log config load errors (if any) after logger is initialized
+  const homedir = process.env.HOME || "";
+  const configPaths = [
+    join(directory, ".opencode", "rate-limit-fallback.json"),
+    join(directory, "rate-limit-fallback.json"),
+    join(homedir, ".opencode", "rate-limit-fallback.json"),
+    join(homedir, ".config", "opencode", "rate-limit-fallback.json"),
+  ];
+
+  for (const configPath of configPaths) {
+    if (existsSync(configPath)) {
+      try {
+        readFileSync(configPath, "utf-8");
+      } catch (error) {
+        logger.error(`Failed to load config from ${configPath}`, { error });
+      }
+    }
+  }
 
   if (!config.enabled) {
     return {};
@@ -629,9 +656,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         await client.session.abort({ path: { id: targetSessionID } });
       } catch (abortError) {
         // Silently ignore abort errors and continue with fallback
-        if (process.env.DEBUG) {
-          console.error(`[RateLimitFallback] Failed to abort session ${targetSessionID}:`, abortError);
-        }
+        logger.debug(`Failed to abort session ${targetSessionID}`, { error: abortError });
       }
 
       await client.tui.showToast({
@@ -724,9 +749,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
     } catch (err) {
       fallbackInProgress.delete(targetSessionID);
       // Silently ignore fallback errors
-      if (process.env.DEBUG) {
-        console.error(`[RateLimitFallback] Fallback error for session ${sessionID}:`, err);
-      }
+      logger.debug(`Fallback error for session ${sessionID}`, { error: err });
     }
   }
 
