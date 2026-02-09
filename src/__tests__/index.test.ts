@@ -1216,9 +1216,34 @@ describe('Subagent Support', () => {
       },
     });
 
-    // The event should be handled without errors
-    // Actual registration is internal, so we verify no errors occur
-    expect(true).toBe(true);
+    // Verify that the subagent's rate limit is handled at the root level
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-session-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered (parent-centered approach - should abort root session)
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'root-session-1',  // Root session, not subagent session
+        }),
+      })
+    );
   });
 
   it('should track session hierarchy correctly', async () => {
@@ -1530,8 +1555,34 @@ describe('Subagent Support', () => {
       },
     });
 
-    // Should be handled without errors
-    expect(true).toBe(true);
+    // Verify that subagent rate limit is NOT handled at root level (since enableSubagentFallback is false)
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-session-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered on the subagent session itself, not the root
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'subagent-session-1',  // Subagent session, NOT root session
+        }),
+      })
+    );
   });
 
   it('should handle multiple hierarchies independently', async () => {
@@ -1625,9 +1676,38 @@ describe('Session Hierarchy Cleanup', () => {
     // Cleanup should be registered
     expect(pluginInstance.cleanup).toBeDefined();
 
-    // Cleanup should not throw errors
+    // Cleanup should not throw errors and should clear internal state
     pluginInstance.cleanup();
-    expect(true).toBe(true);
+
+    // After cleanup, the subagent should not be recognized anymore
+    // Try to trigger rate limit on the subagent - should not find hierarchy
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-session-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Fallback should be triggered on the subagent itself (not root) since hierarchy was cleaned up
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'subagent-session-1',  // Subagent session itself, not root
+        }),
+      })
+    );
   });
 
   it('should clean up sessionToRootMap entries', async () => {
@@ -1652,8 +1732,232 @@ describe('Session Hierarchy Cleanup', () => {
       },
     });
 
-    // Cleanup should not throw errors
+    // Verify that both subagents trigger fallback at root level before cleanup
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-session-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Should trigger fallback at root
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'root-session-1',
+        }),
+      })
+    );
+
+    // Reset mock
+    vi.mocked(mockClient.session.abort).mockClear();
+
+    // Cleanup should not throw errors and should clear internal state
     pluginInstance.cleanup();
-    expect(true).toBe(true);
+
+    // After cleanup, subagent should not trigger fallback at root level anymore
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-session-2',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Should trigger fallback on subagent itself (not root) since hierarchy was cleaned up
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'subagent-session-2',  // Subagent session itself, not root
+        }),
+      })
+    );
+  });
+});
+
+describe('Config Loading Edge Cases', () => {
+  it('should handle invalid JSON in config file gracefully', async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue('invalid json {{{');
+
+    const client = createMockClient();
+    const result = await RateLimitFallback({
+      client: client as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    // Should fall back to default config
+    expect(result).toBeDefined();
+    expect(result.event).toBeDefined();
+  });
+
+  it('should handle config with invalid fallback mode', async () => {
+    const mockConfig = {
+      fallbackMode: "invalid-mode",
+    };
+
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+    const client = createMockClient();
+    const result = await RateLimitFallback({
+      client: client as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    // Should use default fallback mode (cycle)
+    expect(result).toBeDefined();
+  });
+
+  it('should handle config with invalid fallbackModels', async () => {
+    const mockConfig = {
+      fallbackModels: "invalid-array",
+    };
+
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+    const client = createMockClient();
+    const result = await RateLimitFallback({
+      client: client as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    // Should use default fallback models
+    expect(result).toBeDefined();
+  });
+});
+
+describe('Cleanup Functionality', () => {
+  let mockClient: ReturnType<typeof createMockClient>;
+  let pluginInstance: any;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(false);
+    mockClient = createMockClient();
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+  });
+
+  it('should properly clear cleanup interval', async () => {
+    // Verify cleanup function exists
+    expect(pluginInstance.cleanup).toBeDefined();
+    expect(typeof pluginInstance.cleanup).toBe('function');
+
+    // Call cleanup - should not throw errors
+    expect(() => pluginInstance.cleanup()).not.toThrow();
+  });
+
+  it('should clear sessionHierarchies on cleanup', async () => {
+    // Register a subagent to populate sessionHierarchies
+    await pluginInstance.event?.({
+      event: {
+        type: 'subagent.session.created',
+        properties: {
+          sessionID: 'subagent-1',
+          parentSessionID: 'root-1',
+        },
+      },
+    });
+
+    // Verify hierarchy exists before cleanup (by checking fallback behavior)
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Should trigger fallback at root
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'root-1',
+        }),
+      })
+    );
+
+    // Reset mock
+    vi.mocked(mockClient.session.abort).mockClear();
+
+    // Call cleanup
+    pluginInstance.cleanup();
+
+    // After cleanup, hierarchy should be cleared - subagent should not trigger fallback at root
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'subagent-1',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Should trigger fallback on subagent itself (not root)
+    expect(mockClient.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: expect.objectContaining({
+          id: 'subagent-1',
+        }),
+      })
+    );
+  });
+
+  it('should handle multiple cleanup calls safely', async () => {
+    // Multiple cleanup calls should not throw errors
+    expect(() => {
+      pluginInstance.cleanup();
+      pluginInstance.cleanup();
+      pluginInstance.cleanup();
+    }).not.toThrow();
   });
 });

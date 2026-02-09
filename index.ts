@@ -318,6 +318,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         sessionToRootMap.delete(rootSessionID);
       }
     }
+
+    // Clean up stale retry state entries to prevent memory leaks
+    for (const [stateKey, state] of retryState.entries()) {
+      if (now - state.lastAttemptTime > STATE_TIMEOUT_MS) {
+        retryState.delete(stateKey);
+      }
+    }
   }, CLEANUP_INTERVAL_MS);
   activeCleanupIntervals.push(cleanupInterval);
 
@@ -363,45 +370,245 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
     return null;
   }
 
-  async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string) {
-    // Determine the target session ID for fallback processing
-    // For subagent sessions, trigger fallback at the root level (parent-centered approach)
-    let targetSessionID = sessionID;
+  /**
+   * Check and mark fallback in progress for deduplication.
+   * Returns true if processing should continue, false if it should be skipped.
+   */
+  function checkAndMarkFallbackInProgress(sessionID: string): boolean {
+    const lastFallback = fallbackInProgress.get(sessionID);
+    if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
+      return false; // Skip - already processing
+    }
+    fallbackInProgress.set(sessionID, Date.now());
+    return true; // Continue processing
+  }
 
-    try {
-      // Check if this is a subagent session
-      const hierarchy = getHierarchy(sessionID);
-      const rootSessionID = getRootSession(sessionID);
+  /**
+   * Resolve the target session for fallback processing.
+   * For subagent sessions, the target is the root session (parent-centered approach).
+   * Updates hierarchy state and returns { targetSessionID, hierarchy }.
+   */
+  function resolveTargetSessionWithDedup(sessionID: string): { targetSessionID: string; hierarchy: SessionHierarchy | null } | null {
+    const hierarchy = getHierarchy(sessionID);
+    const rootSessionID = getRootSession(sessionID);
 
-      if (rootSessionID && hierarchy) {
-        targetSessionID = rootSessionID;
-
-        // If already processing fallback for this hierarchy, skip
-        const lastFallback = fallbackInProgress.get(targetSessionID);
-        if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
-          return;
-        }
-        fallbackInProgress.set(targetSessionID, Date.now());
-
-        // Update the shared fallback state
-        hierarchy.sharedFallbackState = "in_progress";
-        hierarchy.lastActivity = Date.now();
-
-        // Update the subagent's state
-        const subagent = hierarchy.subagents.get(sessionID);
-        if (subagent) {
-          subagent.fallbackState = "in_progress";
-          subagent.lastActivity = Date.now();
-        }
-      } else {
-        // Prevent duplicate fallback processing within DEDUP_WINDOW_MS for non-subagent sessions
-        const lastFallback = fallbackInProgress.get(targetSessionID);
-        if (lastFallback && Date.now() - lastFallback < DEDUP_WINDOW_MS) {
-          return;
-        }
-        fallbackInProgress.set(targetSessionID, Date.now());
+    if (rootSessionID && hierarchy) {
+      // Check deduplication
+      if (!checkAndMarkFallbackInProgress(rootSessionID)) {
+        return null; // Skip - already processing
       }
 
+      // Update the shared fallback state
+      hierarchy.sharedFallbackState = "in_progress";
+      hierarchy.lastActivity = Date.now();
+
+      // Update the subagent's state
+      const subagent = hierarchy.subagents.get(sessionID);
+      if (subagent) {
+        subagent.fallbackState = "in_progress";
+        subagent.lastActivity = Date.now();
+      }
+
+      return { targetSessionID: rootSessionID, hierarchy };
+    } else {
+      // Prevent duplicate fallback processing for non-subagent sessions
+      if (!checkAndMarkFallbackInProgress(sessionID)) {
+        return null; // Skip - already processing
+      }
+
+      return { targetSessionID: sessionID, hierarchy: null };
+    }
+  }
+
+  /**
+   * Get or create retry state for a specific message.
+   */
+  function getOrCreateRetryState(sessionID: string, messageID: string): { attemptedModels: Set<string>; lastAttemptTime: number } {
+    const stateKey = `${sessionID}:${messageID}`;
+    let state = retryState.get(stateKey);
+
+    if (!state || Date.now() - state.lastAttemptTime > STATE_TIMEOUT_MS) {
+      state = { attemptedModels: new Set<string>(), lastAttemptTime: Date.now() };
+      retryState.set(stateKey, state);
+    }
+
+    return state;
+  }
+
+  /**
+   * Select the next fallback model based on current state and fallback mode.
+   * Returns the selected model or null if no model is available.
+   */
+  async function selectFallbackModel(
+    currentProviderID: string,
+    currentModelID: string,
+    state: { attemptedModels: Set<string>; lastAttemptTime: number }
+  ): Promise<FallbackModel | null> {
+    // Mark current model as rate limited and add to attempted
+    if (currentProviderID && currentModelID) {
+      markModelRateLimited(currentProviderID, currentModelID);
+      state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
+    }
+
+    let nextModel = findNextAvailableModel(currentProviderID || "", currentModelID || "", state.attemptedModels);
+
+    // Handle when no model is found based on fallbackMode
+    if (!nextModel && state.attemptedModels.size > 0) {
+      if (config.fallbackMode === "cycle") {
+        // Reset and retry from the first model
+        state.attemptedModels.clear();
+        if (currentProviderID && currentModelID) {
+          state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
+        }
+        nextModel = findNextAvailableModel("", "", state.attemptedModels);
+      } else if (config.fallbackMode === "retry-last") {
+        // Try the last model in the list once, then reset on next prompt
+        const lastModel = config.fallbackModels[config.fallbackModels.length - 1];
+        if (lastModel) {
+          const isLastModelCurrent = currentProviderID === lastModel.providerID && currentModelID === lastModel.modelID;
+
+          if (!isLastModelCurrent && !isModelRateLimited(lastModel.providerID, lastModel.modelID)) {
+            // Use the last model for one more try
+            nextModel = lastModel;
+            await client.tui.showToast({
+              body: {
+                title: "Last Resort",
+                message: `Trying ${lastModel.modelID} one more time...`,
+                variant: "warning",
+                duration: 3000,
+              },
+            });
+          } else {
+            // Last model also failed, reset for next prompt
+            state.attemptedModels.clear();
+            if (currentProviderID && currentModelID) {
+              state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
+            }
+            nextModel = findNextAvailableModel("", "", state.attemptedModels);
+          }
+        }
+      }
+      // "stop" mode: nextModel remains null, will show error below
+    }
+
+    return nextModel;
+  }
+
+  /**
+   * Extract and validate message parts from a user message.
+   */
+  function extractMessageParts(message: unknown): MessagePart[] {
+    const msg = message as { info: { id: string; role: string }; parts: unknown[] };
+    return msg.parts
+      .filter((p: unknown) => {
+        const part = p as Record<string, unknown>;
+        return part.type === "text" || part.type === "file";
+      })
+      .map((p: unknown): MessagePart | null => {
+        const part = p as Record<string, unknown>;
+        if (part.type === "text") return { type: "text" as const, text: String(part.text) };
+        if (part.type === "file") return { type: "file" as const, path: String(part.path), mediaType: String(part.mediaType) };
+        return null;
+      })
+      .filter((p): p is MessagePart => p !== null);
+  }
+
+  /**
+   * Convert internal MessagePart to SDK-compatible format.
+   */
+  function convertPartsToSDKFormat(parts: MessagePart[]): (TextPartInput | FilePartInput)[] {
+    return parts.map((part): TextPartInput | FilePartInput => {
+      if (part.type === "text") {
+        return { type: "text", text: part.text };
+      }
+      // For file parts, we need to match the FilePartInput format
+      // Using path as url since we're dealing with local files
+      return {
+        type: "file",
+        url: part.path,
+        mime: part.mediaType || "application/octet-stream",
+      };
+    });
+  }
+
+  /**
+   * Propagate model changes to all subagents in the hierarchy.
+   */
+  function propagateModelToSubagents(
+    hierarchy: SessionHierarchy,
+    targetSessionID: string,
+    providerID: string,
+    modelID: string
+  ): void {
+    if (hierarchy.rootSessionID === targetSessionID) {
+      hierarchy.sharedFallbackState = "completed";
+      hierarchy.lastActivity = Date.now();
+
+      // Update model tracking for all subagents
+      for (const [subagentID, subagent] of hierarchy.subagents.entries()) {
+        currentSessionModel.set(subagentID, {
+          providerID,
+          modelID,
+          lastUpdated: Date.now(),
+        });
+        subagent.fallbackState = "completed";
+        subagent.lastActivity = Date.now();
+      }
+    }
+  }
+
+  /**
+   * Retry the prompt with a different model.
+   */
+  async function retryWithModel(
+    targetSessionID: string,
+    model: FallbackModel,
+    parts: MessagePart[],
+    hierarchy: SessionHierarchy | null
+  ): Promise<void> {
+    // Track the new model for this session
+    currentSessionModel.set(targetSessionID, {
+      providerID: model.providerID,
+      modelID: model.modelID,
+      lastUpdated: Date.now(),
+    });
+
+    // If this is a root session with subagents, propagate the model to all subagents
+    if (hierarchy) {
+      propagateModelToSubagents(hierarchy, targetSessionID, model.providerID, model.modelID);
+    }
+
+    // Convert internal MessagePart to SDK-compatible format
+    const sdkParts = convertPartsToSDKFormat(parts);
+
+    await client.session.prompt({
+      path: { id: targetSessionID },
+      body: {
+        parts: sdkParts,
+        model: { providerID: model.providerID, modelID: model.modelID },
+      },
+    });
+
+    await client.tui.showToast({
+      body: {
+        title: "Fallback Successful",
+        message: `Now using ${model.modelID}`,
+        variant: "success",
+        duration: 3000,
+      },
+    });
+  }
+
+  async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string) {
+    // Resolve the target session for fallback processing
+    const resolution = resolveTargetSessionWithDedup(sessionID);
+    if (!resolution) {
+      return; // Skipped due to deduplication
+    }
+
+    const { targetSessionID, hierarchy } = resolution;
+
+    try {
       // If no model info provided, try to get from tracked session model
       if (!currentProviderID || !currentModelID) {
         const tracked = currentSessionModel.get(targetSessionID);
@@ -427,6 +634,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         },
       });
 
+      // Get messages from the session
       const messagesResult = await client.session.messages({ path: { id: targetSessionID } });
       if (!messagesResult.data) {
         fallbackInProgress.delete(targetSessionID);
@@ -440,60 +648,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         return;
       }
 
-      const stateKey = `${sessionID}:${lastUserMessage.info.id}`;
-      let state = retryState.get(stateKey);
+      // Get or create retry state for this message
+      const state = getOrCreateRetryState(sessionID, lastUserMessage.info.id);
 
-      if (!state || Date.now() - state.lastAttemptTime > STATE_TIMEOUT_MS) {
-        state = { attemptedModels: new Set<string>(), lastAttemptTime: Date.now() };
-        retryState.set(stateKey, state);
-      }
+      // Select the next fallback model
+      const nextModel = await selectFallbackModel(currentProviderID, currentModelID, state);
 
-      if (currentProviderID && currentModelID) {
-        markModelRateLimited(currentProviderID, currentModelID);
-        state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
-      }
-
-      let nextModel = findNextAvailableModel(currentProviderID || "", currentModelID || "", state.attemptedModels);
-
-      // Handle when no model is found based on fallbackMode
-      if (!nextModel && state.attemptedModels.size > 0) {
-        if (config.fallbackMode === "cycle") {
-          // Reset and retry from the first model
-          state.attemptedModels.clear();
-          if (currentProviderID && currentModelID) {
-            state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
-          }
-          nextModel = findNextAvailableModel("", "", state.attemptedModels);
-        } else if (config.fallbackMode === "retry-last") {
-          // Try the last model in the list once, then reset on next prompt
-          const lastModel = config.fallbackModels[config.fallbackModels.length - 1];
-          if (lastModel) {
-            const isLastModelCurrent = currentProviderID === lastModel.providerID && currentModelID === lastModel.modelID;
-
-            if (!isLastModelCurrent && !isModelRateLimited(lastModel.providerID, lastModel.modelID)) {
-              // Use the last model for one more try
-              nextModel = lastModel;
-              await client.tui.showToast({
-                body: {
-                  title: "Last Resort",
-                  message: `Trying ${lastModel.modelID} one more time...`,
-                  variant: "warning",
-                  duration: 3000,
-                },
-              });
-            } else {
-              // Last model also failed, reset for next prompt
-              state.attemptedModels.clear();
-              if (currentProviderID && currentModelID) {
-                state.attemptedModels.add(getModelKey(currentProviderID, currentModelID));
-              }
-              nextModel = findNextAvailableModel("", "", state.attemptedModels);
-            }
-          }
-        }
-        // "stop" mode: nextModel remains null, will show error below
-      }
-
+      // Show error if no model is available
       if (!nextModel) {
         await client.tui.showToast({
           body: {
@@ -505,6 +666,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
             duration: 5000,
           },
         });
+        const stateKey = `${sessionID}:${lastUserMessage.info.id}`;
         retryState.delete(stateKey);
         fallbackInProgress.delete(targetSessionID);
         return;
@@ -513,18 +675,8 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       state.attemptedModels.add(getModelKey(nextModel.providerID, nextModel.modelID));
       state.lastAttemptTime = Date.now();
 
-      const parts: MessagePart[] = lastUserMessage.parts
-        .filter((p: unknown) => {
-          const part = p as Record<string, unknown>;
-          return part.type === "text" || part.type === "file";
-        })
-        .map((p: unknown): MessagePart | null => {
-          const part = p as Record<string, unknown>;
-          if (part.type === "text") return { type: "text" as const, text: String(part.text) };
-          if (part.type === "file") return { type: "file" as const, path: String(part.path), mediaType: String(part.mediaType) };
-          return null;
-        })
-        .filter((p): p is MessagePart => p !== null);
+      // Extract message parts
+      const parts = extractMessageParts(lastUserMessage);
 
       if (parts.length === 0) {
         fallbackInProgress.delete(targetSessionID);
@@ -540,62 +692,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         },
       });
 
-      // Track the new model for this session
-      currentSessionModel.set(targetSessionID, {
-        providerID: nextModel.providerID,
-        modelID: nextModel.modelID,
-        lastUpdated: Date.now(),
-      });
+      // Retry with the selected model
+      await retryWithModel(targetSessionID, nextModel, parts, hierarchy);
 
-      // If this is a root session with subagents, propagate the model to all subagents
-      if (hierarchy && hierarchy.rootSessionID === targetSessionID) {
-        hierarchy.sharedFallbackState = "completed";
-        hierarchy.lastActivity = Date.now();
-
-        // Update model tracking for all subagents
-        for (const [subagentID, subagent] of hierarchy.subagents.entries()) {
-          currentSessionModel.set(subagentID, {
-            providerID: nextModel.providerID,
-            modelID: nextModel.modelID,
-            lastUpdated: Date.now(),
-          });
-          subagent.fallbackState = "completed";
-          subagent.lastActivity = Date.now();
-        }
-      }
-
-      // Convert internal MessagePart to SDK-compatible format
-      const sdkParts = parts.map((part): TextPartInput | FilePartInput => {
-        if (part.type === "text") {
-          return { type: "text", text: part.text };
-        }
-        // For file parts, we need to match the FilePartInput format
-        // Using path as url since we're dealing with local files
-        return {
-          type: "file",
-          url: part.path,
-          mime: part.mediaType || "application/octet-stream",
-        };
-      });
-
-      await client.session.prompt({
-        path: { id: targetSessionID },
-        body: {
-          parts: sdkParts,
-          model: { providerID: nextModel.providerID, modelID: nextModel.modelID },
-        },
-      });
-
-      await client.tui.showToast({
-        body: {
-          title: "Fallback Successful",
-          message: `Now using ${nextModel.modelID}`,
-          variant: "success",
-          duration: 3000,
-        },
-      });
-
+      // Clean up state
+      const stateKey = `${sessionID}:${lastUserMessage.info.id}`;
       retryState.delete(stateKey);
+
       // Explicitly clean up fallbackInProgress after cooldown period
       // This prevents memory leaks while maintaining the deduplication window
       setTimeout(() => {
