@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createLogger } from '../logger';
-import { MetricsManager, type MetricsConfig } from '../index';
+import { MetricsManager } from '../src/metrics/MetricsManager';
+import type { MetricsConfig } from '../src/types';
 
 describe('MetricsManager', () => {
   let metricsManager: MetricsManager;
