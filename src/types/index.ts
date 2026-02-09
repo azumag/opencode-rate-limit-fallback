@@ -30,6 +30,24 @@ export type FallbackMode = "cycle" | "stop" | "retry-last";
 // ============================================================================
 
 /**
+ * Retry strategy type
+ */
+export type RetryStrategy = "immediate" | "exponential" | "linear" | "custom";
+
+/**
+ * Retry policy configuration
+ */
+export interface RetryPolicy {
+  maxRetries: number;          // Maximum retry attempts (default: 3)
+  strategy: RetryStrategy;     // Backoff strategy (default: "immediate")
+  baseDelayMs: number;         // Base delay in ms (default: 1000)
+  maxDelayMs: number;          // Maximum delay in ms (default: 30000)
+  jitterEnabled: boolean;      // Add random jitter to avoid thundering herd
+  jitterFactor: number;        // Jitter factor (default: 0.1, 10% variance)
+  timeoutMs?: number;          // Overall timeout for retries (optional)
+}
+
+/**
  * Metrics output configuration
  */
 export interface MetricsOutputConfig {
@@ -57,6 +75,7 @@ export interface PluginConfig {
   fallbackMode: FallbackMode;
   maxSubagentDepth?: number;
   enableSubagentFallback?: boolean;
+  retryPolicy?: RetryPolicy;
   log?: LogConfig;
   metrics?: MetricsConfig;
 }
@@ -69,6 +88,30 @@ export interface PluginConfig {
  * Fallback state for tracking progress
  */
 export type FallbackState = "none" | "in_progress" | "completed";
+
+/**
+ * Retry attempt information
+ */
+export interface RetryAttempt {
+  attemptCount: number;
+  startTime: number;
+  delays: number[];
+  lastAttemptTime: number;
+  modelIDs: string[];
+}
+
+/**
+ * Retry statistics for tracking retry behavior
+ */
+export interface RetryStats {
+  totalRetries: number;
+  successful: number;
+  failed: number;
+  averageDelay: number;
+  byModel: Map<string, { attempts: number; successes: number }>;
+  startTime: number;
+  lastAttemptTime: number;
+}
 
 /**
  * Subagent session information
@@ -180,6 +223,17 @@ export interface ModelPerformanceMetrics {
 }
 
 /**
+ * Retry metrics
+ */
+export interface RetryMetrics {
+  total: number;
+  successful: number;
+  failed: number;
+  averageDelay: number;
+  byModel: Map<string, { attempts: number; successes: number }>;
+}
+
+/**
  * Complete metrics data
  */
 export interface MetricsData {
@@ -191,6 +245,7 @@ export interface MetricsData {
     averageDuration: number;
     byTargetModel: Map<string, FallbackTargetMetrics>;
   };
+  retries: RetryMetrics;
   modelPerformance: Map<string, ModelPerformanceMetrics>;
   startedAt: number;
   generatedAt: number;
@@ -290,9 +345,26 @@ export const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
 ];
 
 /**
+ * Default retry policy
+ */
+export const DEFAULT_RETRY_POLICY: RetryPolicy = {
+  maxRetries: 3,
+  strategy: "immediate",
+  baseDelayMs: 1000,
+  maxDelayMs: 30000,
+  jitterEnabled: false,
+  jitterFactor: 0.1,
+};
+
+/**
  * Valid fallback modes
  */
 export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last"];
+
+/**
+ * Valid retry strategies
+ */
+export const VALID_RETRY_STRATEGIES: RetryStrategy[] = ["immediate", "exponential", "linear", "custom"];
 
 /**
  * Valid reset intervals

@@ -35,6 +35,13 @@ export class MetricsManager {
         averageDuration: 0,
         byTargetModel: new Map(),
       },
+      retries: {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        averageDelay: 0,
+        byModel: new Map(),
+      },
       modelPerformance: new Map(),
       startedAt: Date.now(),
       generatedAt: Date.now(),
@@ -71,6 +78,13 @@ export class MetricsManager {
         failed: 0,
         averageDuration: 0,
         byTargetModel: new Map(),
+      },
+      retries: {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        averageDelay: 0,
+        byModel: new Map(),
       },
       modelPerformance: new Map(),
       startedAt: Date.now(),
@@ -207,6 +221,50 @@ export class MetricsManager {
   }
 
   /**
+   * Record a retry attempt
+   */
+  recordRetryAttempt(modelID: string, delay: number): void {
+    if (!this.config.enabled) return;
+
+    this.metrics.retries.total++;
+
+    // Update average delay
+    const totalDelay = this.metrics.retries.averageDelay * (this.metrics.retries.total - 1);
+    this.metrics.retries.averageDelay = (totalDelay + delay) / this.metrics.retries.total;
+
+    // Update model-specific stats
+    let modelStats = this.metrics.retries.byModel.get(modelID);
+    if (!modelStats) {
+      modelStats = { attempts: 0, successes: 0 };
+      this.metrics.retries.byModel.set(modelID, modelStats);
+    }
+    modelStats.attempts++;
+  }
+
+  /**
+   * Record a successful retry
+   */
+  recordRetrySuccess(modelID: string): void {
+    if (!this.config.enabled) return;
+
+    this.metrics.retries.successful++;
+
+    const modelStats = this.metrics.retries.byModel.get(modelID);
+    if (modelStats) {
+      modelStats.successes++;
+    }
+  }
+
+  /**
+   * Record a failed retry
+   */
+  recordRetryFailure(): void {
+    if (!this.config.enabled) return;
+
+    this.metrics.retries.failed++;
+  }
+
+  /**
    * Get a copy of the current metrics
    */
   getMetrics(): MetricsData {
@@ -243,6 +301,12 @@ export class MetricsManager {
         ...metrics.fallbacks,
         byTargetModel: Object.fromEntries(
           Array.from(metrics.fallbacks.byTargetModel.entries()).map(([k, v]) => [k, v])
+        ),
+      },
+      retries: {
+        ...metrics.retries,
+        byModel: Object.fromEntries(
+          Array.from(metrics.retries.byModel.entries()).map(([k, v]) => [k, v])
         ),
       },
       modelPerformance: Object.fromEntries(
@@ -300,6 +364,30 @@ export class MetricsManager {
         lines.push(`      Used: ${data.usedAsFallback}`);
         lines.push(`      Success: ${data.successful}`);
         lines.push(`      Failed: ${data.failed}`);
+      }
+    }
+    lines.push("");
+
+    // Retries
+    lines.push("Retries:");
+    lines.push("-".repeat(40));
+    lines.push(`  Total: ${metrics.retries.total}`);
+    lines.push(`  Successful: ${metrics.retries.successful}`);
+    lines.push(`  Failed: ${metrics.retries.failed}`);
+    if (metrics.retries.averageDelay > 0) {
+      lines.push(`  Avg Delay: ${(metrics.retries.averageDelay / 1000).toFixed(2)}s`);
+    }
+    if (metrics.retries.byModel.size > 0) {
+      lines.push("");
+      lines.push("  By Model:");
+      for (const [model, data] of metrics.retries.byModel.entries()) {
+        lines.push(`    ${model}:`);
+        lines.push(`      Attempts: ${data.attempts}`);
+        lines.push(`      Successes: ${data.successes}`);
+        if (data.attempts > 0) {
+          const successRate = ((data.successes / data.attempts) * 100).toFixed(1);
+          lines.push(`      Success Rate: ${successRate}%`);
+        }
       }
     }
     lines.push("");
@@ -368,6 +456,31 @@ export class MetricsManager {
         data.usedAsFallback,
         data.successful,
         data.failed,
+      ].join(","));
+    }
+    lines.push("");
+
+    // Retries Summary CSV
+    lines.push("=== RETRIES_SUMMARY ===");
+    lines.push(`total,successful,failed,avg_delay_ms`);
+    lines.push([
+      metrics.retries.total,
+      metrics.retries.successful,
+      metrics.retries.failed,
+      metrics.retries.averageDelay || 0,
+    ].join(","));
+    lines.push("");
+
+    // Retries by Model CSV
+    lines.push("=== RETRIES_BY_MODEL ===");
+    lines.push("model,attempts,successes,success_rate");
+    for (const [model, data] of metrics.retries.byModel.entries()) {
+      const successRate = data.attempts > 0 ? ((data.successes / data.attempts) * 100).toFixed(1) : "0";
+      lines.push([
+        model,
+        data.attempts,
+        data.successes,
+        successRate,
       ].join(","));
     }
     lines.push("");

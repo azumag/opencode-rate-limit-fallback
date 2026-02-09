@@ -12,6 +12,11 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 - Three fallback modes: `cycle`, `stop`, and `retry-last`
 - Session model tracking for sequential fallback across multiple rate limits
 - Cooldown period to prevent immediate retry on rate-limited models
+- **Exponential backoff with configurable retry policies**
+  - Supports immediate, exponential, and linear backoff strategies
+  - Jitter to prevent thundering herd problem
+  - Configurable retry limits and timeouts
+  - Retry statistics tracking
 - Toast notifications for user feedback
 - Subagent session support with automatic fallback propagation to parent sessions
 - Configurable maximum subagent nesting depth
@@ -64,6 +69,15 @@ Create a configuration file at one of these locations:
     { "providerID": "google", "modelID": "gemini-2.5-pro" },
     { "providerID": "google", "modelID": "gemini-2.5-flash" }
   ],
+  "retryPolicy": {
+    "maxRetries": 3,
+    "strategy": "exponential",
+    "baseDelayMs": 1000,
+    "maxDelayMs": 30000,
+    "jitterEnabled": true,
+    "jitterFactor": 0.1,
+    "timeoutMs": 60000
+  },
   "metrics": {
     "enabled": true,
     "output": {
@@ -85,6 +99,7 @@ Create a configuration file at one of these locations:
 | `fallbackModels` | array | See below | List of fallback models in priority order |
 | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
 | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
+| `retryPolicy` | object | See below | Retry policy configuration (see below) |
 
 ### Fallback Modes
 
@@ -93,6 +108,64 @@ Create a configuration file at one of these locations:
 | `"cycle"` | Reset and retry from the first model when all models are exhausted (default) |
 | `"stop"` | Stop and show error when all models are exhausted |
 | `"retry-last"` | Try the last model once more, then reset to first on next prompt |
+
+### Retry Policy
+
+The retry policy controls how the plugin handles retry attempts after rate limits, with support for exponential backoff to reduce API pressure.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxRetries` | number | `3` | Maximum retry attempts before giving up |
+| `strategy` | string | `"immediate"` | Backoff strategy: `"immediate"`, `"exponential"`, or `"linear"` |
+| `baseDelayMs` | number | `1000` | Base delay in milliseconds for backoff calculation |
+| `maxDelayMs` | number | `30000` | Maximum delay in milliseconds |
+| `jitterEnabled` | boolean | `false` | Add random jitter to delays to prevent thundering herd |
+| `jitterFactor` | number | `0.1` | Jitter factor (0.1 = 10% variance) |
+| `timeoutMs` | number | `undefined` | Overall timeout for all retry attempts (optional) |
+
+#### Retry Strategies
+
+**Immediate** (default, no backoff)
+```
+delay = 0ms
+```
+Retries immediately without any delay. This is the original behavior and maintains backward compatibility.
+
+**Exponential** (recommended for production)
+```
+delay = min(baseDelayMs * (2 ^ attempt), maxDelayMs)
+delay = delay * (1 + random(-jitterFactor, jitterFactor))  // if jitter enabled
+```
+Exponential backoff that doubles the delay after each attempt. This is the standard pattern for rate limit handling.
+
+Example with `baseDelayMs: 1000`, `maxDelayMs: 30000`, and `jitterFactor: 0.1`:
+- Attempt 0: ~1000ms (with jitter: 900-1100ms)
+- Attempt 1: ~2000ms (with jitter: 1800-2200ms)
+- Attempt 2: ~4000ms (with jitter: 3600-4400ms)
+- Attempt 3: ~8000ms (with jitter: 7200-8800ms)
+- Attempt 4+: ~16000ms (capped at maxDelayMs: 30000ms)
+
+**Linear**
+```
+delay = min(baseDelayMs * (attempt + 1), maxDelayMs)
+delay = delay * (1 + random(-jitterFactor, jitterFactor))  // if jitter enabled
+```
+Linear backoff that increases delay by a constant amount after each attempt.
+
+Example with `baseDelayMs: 1000` and `maxDelayMs: 5000`:
+- Attempt 0: ~1000ms
+- Attempt 1: ~2000ms
+- Attempt 2: ~3000ms
+- Attempt 3: ~4000ms
+- Attempt 4+: ~5000ms (capped at maxDelayMs)
+
+#### Jitter
+
+Jitter adds random variation to delay times to prevent the "thundering herd" problem, where multiple clients retry simultaneously and overwhelm the API.
+
+- Recommended for production environments with multiple concurrent users
+- `jitterFactor: 0.1` adds ±10% variance to delay times
+- Example: With base delay of 1000ms and jitterFactor 0.1, actual delay will be 900-1100ms
 
 ### Default Fallback Models
 
@@ -136,6 +209,7 @@ When OpenCode uses subagents (e.g., for complex tasks requiring specialized agen
 The plugin includes a metrics collection feature that tracks:
 - Rate limit events per provider/model
 - Fallback statistics (total, successful, failed, average duration)
+- **Retry statistics** (total attempts, successes, failures, average delay)
 - Model performance (requests, successes, failures, response time)
 
 ### Metrics Configuration
@@ -191,6 +265,23 @@ Fallbacks:
   Failed: 1
   Avg Duration: 1.25s
 
+Retries:
+----------------------------------------
+  Total: 12
+  Successful: 8
+  Failed: 4
+  Avg Delay: 2.5s
+
+  By Model:
+    anthropic/claude-3-5-sonnet-20250514:
+      Attempts: 5
+      Successes: 3
+      Success Rate: 60.0%
+    google/gemini-2.5-pro:
+      Attempts: 7
+      Successes: 5
+      Success Rate: 71.4%
+
 Model Performance:
 ----------------------------------------
   google/gemini-2.5-pro:
@@ -225,6 +316,22 @@ Model Performance:
       }
     }
   },
+  "retries": {
+    "total": 12,
+    "successful": 8,
+    "failed": 4,
+    "averageDelay": 2500,
+    "byModel": {
+      "anthropic/claude-3-5-sonnet-20250514": {
+        "attempts": 5,
+        "successes": 3
+      },
+      "google/gemini-2.5-pro": {
+        "attempts": 7,
+        "successes": 5
+      }
+    }
+  },
   "modelPerformance": {
     "google/gemini-2.5-pro": {
       "requests": 10,
@@ -247,6 +354,15 @@ anthropic/claude-3-5-sonnet-20250514,5,1739148000000,1739149740000,3500
 === FALLBACKS_SUMMARY ===
 total,successful,failed,avg_duration_ms
 3,2,1,1250
+
+=== RETRIES_SUMMARY ===
+total,successful,failed,avg_delay_ms
+12,8,4,2500
+
+=== RETRIES_BY_MODEL ===
+model,attempts,successes,success_rate
+anthropic/claude-3-5-sonnet-20250514,5,3,60.0
+google/gemini-2.5-pro,7,5,71.4
 
 === MODEL_PERFORMANCE ===
 model,requests,successes,failures,avg_response_time_ms,success_rate

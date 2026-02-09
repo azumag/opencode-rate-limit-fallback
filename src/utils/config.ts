@@ -9,6 +9,8 @@ import {
   DEFAULT_FALLBACK_MODELS,
   VALID_FALLBACK_MODES,
   VALID_RESET_INTERVALS,
+  DEFAULT_RETRY_POLICY,
+  VALID_RETRY_STRATEGIES,
 } from '../types/index.js';
 
 /**
@@ -19,6 +21,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
   cooldownMs: 60 * 1000,
   enabled: true,
   fallbackMode: "cycle",
+  retryPolicy: DEFAULT_RETRY_POLICY,
   log: {
     level: "warn",
     format: "simple",
@@ -40,12 +43,18 @@ export const DEFAULT_CONFIG: PluginConfig = {
 export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const mode = config.fallbackMode;
   const resetInterval = config.metrics?.resetInterval;
+  const strategy = config.retryPolicy?.strategy;
 
   return {
     ...DEFAULT_CONFIG,
     ...config,
     fallbackModels: config.fallbackModels || DEFAULT_CONFIG.fallbackModels,
     fallbackMode: mode && VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
+    retryPolicy: config.retryPolicy ? {
+      ...DEFAULT_CONFIG.retryPolicy!,
+      ...config.retryPolicy,
+      strategy: strategy && VALID_RETRY_STRATEGIES.includes(strategy) ? strategy : DEFAULT_CONFIG.retryPolicy!.strategy,
+    } : DEFAULT_CONFIG.retryPolicy!,
     log: config.log ? { ...DEFAULT_CONFIG.log, ...config.log } : DEFAULT_CONFIG.log,
     metrics: config.metrics ? {
       ...DEFAULT_CONFIG.metrics!,

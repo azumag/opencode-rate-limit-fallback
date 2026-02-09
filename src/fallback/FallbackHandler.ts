@@ -9,6 +9,7 @@ import { MetricsManager } from '../metrics/MetricsManager.js';
 import { ModelSelector } from './ModelSelector.js';
 import { extractMessageParts, convertPartsToSDKFormat, safeShowToast, getStateKey, getModelKey, DEDUP_WINDOW_MS, STATE_TIMEOUT_MS } from '../utils/helpers.js';
 import type { SubagentTracker } from '../session/SubagentTracker.js';
+import { RetryManager } from '../retry/RetryManager.js';
 
 /**
  * Fallback Handler class for orchestrating the fallback retry flow
@@ -30,6 +31,9 @@ export class FallbackHandler {
   // Subagent tracker reference
   private subagentTracker: SubagentTracker;
 
+  // Retry manager reference
+  private retryManager: RetryManager;
+
   constructor(config: PluginConfig, client: OpenCodeClient, logger: Logger, metricsManager: MetricsManager, subagentTracker: SubagentTracker) {
     this.config = config;
     this.client = client;
@@ -43,6 +47,9 @@ export class FallbackHandler {
     this.retryState = new Map();
     this.fallbackInProgress = new Map();
     this.fallbackMessages = new Map();
+
+    // Initialize retry manager
+    this.retryManager = new RetryManager(config.retryPolicy || {}, logger);
   }
 
   /**
@@ -227,6 +234,36 @@ export class FallbackHandler {
       const stateKey = getStateKey(sessionID, lastUserMessage.info.id);
       const fallbackKey = getStateKey(dedupSessionID, lastUserMessage.info.id);
 
+      // Check if retry should be attempted (using retry manager)
+      if (!this.retryManager.canRetry(dedupSessionID, lastUserMessage.info.id)) {
+        await safeShowToast(this.client, {
+          body: {
+            title: "Fallback Exhausted",
+            message: "All retry attempts failed",
+            variant: "error",
+            duration: 5000,
+          },
+        });
+        this.logger.warn('Retry exhausted', { sessionID: dedupSessionID, messageID: lastUserMessage.info.id });
+        this.retryState.delete(stateKey);
+        this.fallbackInProgress.delete(fallbackKey);
+
+        // Record retry failure metric
+        if (this.metricsManager) {
+          this.metricsManager.recordRetryFailure();
+        }
+        return;
+      }
+
+      // Get delay for next retry
+      const delay = this.retryManager.getRetryDelay(dedupSessionID, lastUserMessage.info.id);
+
+      // Apply delay if configured
+      if (delay > 0) {
+        this.logger.debug(`Applying retry delay`, { delayMs: delay });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+
       // Select the next fallback model
       const nextModel = await this.modelSelector.selectFallbackModel(currentProviderID, currentModelID, state.attemptedModels);
 
@@ -250,6 +287,14 @@ export class FallbackHandler {
       state.attemptedModels.add(getModelKey(nextModel.providerID, nextModel.modelID));
       state.lastAttemptTime = Date.now();
 
+      // Record retry attempt
+      this.retryManager.recordRetry(dedupSessionID, lastUserMessage.info.id, nextModel.modelID, delay);
+
+      // Record retry metric
+      if (this.metricsManager) {
+        this.metricsManager.recordRetryAttempt(nextModel.modelID, delay);
+      }
+
       // Extract message parts
       const parts = extractMessageParts(lastUserMessage);
 
@@ -261,7 +306,7 @@ export class FallbackHandler {
       await safeShowToast(this.client, {
         body: {
           title: "Retrying",
-          message: `Using ${nextModel.providerID}/${nextModel.modelID}`,
+          message: `Using ${nextModel.providerID}/${nextModel.modelID}${delay > 0 ? ` (after ${delay}ms)` : ''}`,
           variant: "info",
           duration: 3000,
         },
@@ -282,6 +327,12 @@ export class FallbackHandler {
       // Retry with the selected model
       await this.retryWithModel(dedupSessionID, nextModel, parts, hierarchy);
 
+      // Record retry success
+      this.retryManager.recordSuccess(dedupSessionID, nextModel.modelID);
+      if (this.metricsManager) {
+        this.metricsManager.recordRetrySuccess(nextModel.modelID);
+      }
+
       // Clean up state
       this.retryState.delete(stateKey);
 
@@ -293,6 +344,11 @@ export class FallbackHandler {
         error: errorMessage,
         name: errorName,
       });
+
+      // Record retry failure on error
+      const rootSessionID = this.subagentTracker.getRootSession(sessionID);
+      const targetSessionID = rootSessionID || sessionID;
+      this.retryManager.recordFailure(targetSessionID);
     }
   }
 
@@ -384,6 +440,7 @@ export class FallbackHandler {
     }
 
     this.modelSelector.cleanupStaleEntries();
+    this.retryManager.cleanupStaleEntries(SESSION_ENTRY_TTL_MS);
   }
 
   /**
@@ -395,5 +452,6 @@ export class FallbackHandler {
     this.retryState.clear();
     this.fallbackInProgress.clear();
     this.fallbackMessages.clear();
+    this.retryManager.destroy();
   }
 }
