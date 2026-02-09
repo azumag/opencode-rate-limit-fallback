@@ -2,7 +2,7 @@
  * General utility functions
  */
 
-import type { MessagePart, SDKMessagePartInput } from '../types/index.js';
+import type { MessagePart, SDKMessagePartInput, ToastMessage, OpenCodeClient } from '../types/index.js';
 import {
   DEDUP_WINDOW_MS as DEDUP_WINDOW_MS_TYPE,
   STATE_TIMEOUT_MS as STATE_TIMEOUT_MS_TYPE,
@@ -66,7 +66,7 @@ export function convertPartsToSDKFormat(parts: MessagePart[]): SDKMessagePartInp
 /**
  * Extract toast message properties with fallback values
  */
-export function getToastMessage(toast: any): { title: string; message: string; variant: string } {
+export function getToastMessage(toast: ToastMessage): { title: string; message: string; variant: string } {
   const title = toast?.body?.title || toast?.title || "Toast";
   const message = toast?.body?.message || toast?.message || "";
   const variant = toast?.body?.variant || toast?.variant || "info";
@@ -76,7 +76,7 @@ export function getToastMessage(toast: any): { title: string; message: string; v
 /**
  * Safely show toast, falling back to console logging if TUI is missing or fails
  */
-export const safeShowToast = async (client: any, toast: any) => {
+export const safeShowToast = async (client: OpenCodeClient, toast: ToastMessage) => {
   const { title, message, variant } = getToastMessage(toast);
 
   const logToConsole = () => {

@@ -221,6 +221,36 @@ export type MessagePart = TextPart | FilePart;
 export type SDKMessagePartInput = TextPartInput | FilePartInput;
 
 // ============================================================================
+// Toast Types
+// ============================================================================
+
+/**
+ * Toast variant type
+ */
+export type ToastVariant = "info" | "success" | "warning" | "error";
+
+/**
+ * Toast body content
+ */
+export interface ToastBody {
+  title: string;
+  message: string;
+  variant: ToastVariant;
+  duration?: number;
+}
+
+/**
+ * Toast message structure
+ */
+export interface ToastMessage {
+  body?: ToastBody;
+  title?: string;
+  message?: string;
+  variant?: ToastVariant;
+  duration?: number;
+}
+
+// ============================================================================
 // Client Types
 // ============================================================================
 
@@ -234,7 +264,7 @@ export type OpenCodeClient = {
     prompt: (args: { path: { id: string }; body: { parts: SDKMessagePartInput[]; model: { providerID: string; modelID: string } } }) => Promise<unknown>;
   };
   tui?: {
-    showToast: (toast: any) => Promise<any>;
+    showToast: (toast: ToastMessage) => Promise<unknown>;
   };
 };
 

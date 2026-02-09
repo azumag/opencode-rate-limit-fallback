@@ -37,7 +37,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 /**
  * Validate configuration values
  */
-export function validateConfig(config: any): PluginConfig {
+export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const mode = config.fallbackMode;
   const resetInterval = config.metrics?.resetInterval;
 
@@ -45,7 +45,7 @@ export function validateConfig(config: any): PluginConfig {
     ...DEFAULT_CONFIG,
     ...config,
     fallbackModels: config.fallbackModels || DEFAULT_CONFIG.fallbackModels,
-    fallbackMode: VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
+    fallbackMode: mode && VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
     log: config.log ? { ...DEFAULT_CONFIG.log, ...config.log } : DEFAULT_CONFIG.log,
     metrics: config.metrics ? {
       ...DEFAULT_CONFIG.metrics!,
@@ -54,7 +54,7 @@ export function validateConfig(config: any): PluginConfig {
         ...DEFAULT_CONFIG.metrics!.output,
         ...config.metrics.output,
       } : DEFAULT_CONFIG.metrics!.output,
-      resetInterval: VALID_RESET_INTERVALS.includes(resetInterval) ? resetInterval : DEFAULT_CONFIG.metrics!.resetInterval,
+      resetInterval: resetInterval && VALID_RESET_INTERVALS.includes(resetInterval) ? resetInterval : DEFAULT_CONFIG.metrics!.resetInterval,
     } : DEFAULT_CONFIG.metrics!,
   };
 }
@@ -75,7 +75,7 @@ export function loadConfig(directory: string): PluginConfig {
     if (existsSync(configPath)) {
       try {
         const content = readFileSync(configPath, "utf-8");
-        const userConfig = JSON.parse(content);
+        const userConfig = JSON.parse(content) as Partial<PluginConfig>;
         return validateConfig(userConfig);
       } catch (error) {
         // Log config errors to console immediately before logger is initialized
