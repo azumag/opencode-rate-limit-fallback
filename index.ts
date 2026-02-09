@@ -114,7 +114,7 @@ function isSubagentSessionCreatedEvent(event: { type: string; properties?: unkno
 }
 
 const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
-  { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+  { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
   { providerID: "google", modelID: "gemini-2.5-pro" },
   { providerID: "google", modelID: "gemini-2.5-flash" },
 ];
@@ -165,6 +165,9 @@ function loadConfig(directory: string): PluginConfig {
         };
       } catch (error) {
         // Silently ignore config load errors
+        if (process.env.DEBUG) {
+          console.error(`[RateLimitFallback] Failed to load config from ${configPath}:`, error);
+        }
       }
     }
   }
@@ -174,6 +177,10 @@ function loadConfig(directory: string): PluginConfig {
 
 function getModelKey(providerID: string, modelID: string): string {
   return `${providerID}/${modelID}`;
+}
+
+function getStateKey(sessionID: string, messageID: string): string {
+  return `${sessionID}:${messageID}`;
 }
 
 function isRateLimitError(error: unknown): boolean {
@@ -214,8 +221,8 @@ const STATE_TIMEOUT_MS = 30000;
 const CLEANUP_INTERVAL_MS = 300000; // 5 minutes
 const SESSION_ENTRY_TTL_MS = 3600000; // 1 hour
 
-// Track cleanup intervals globally to prevent TypeScript warnings
-const activeCleanupIntervals: NodeJS.Timeout[] = [];
+// Track all active fallback timeout timers for cleanup
+const activeFallbackTimers: Map<string, NodeJS.Timeout> = new Map();
 
 export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const config = loadConfig(directory);
@@ -326,7 +333,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       }
     }
   }, CLEANUP_INTERVAL_MS);
-  activeCleanupIntervals.push(cleanupInterval);
 
   function isModelRateLimited(providerID: string, modelID: string): boolean {
     const key = getModelKey(providerID, modelID);
@@ -424,7 +430,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
    * Get or create retry state for a specific message.
    */
   function getOrCreateRetryState(sessionID: string, messageID: string): { attemptedModels: Set<string>; lastAttemptTime: number } {
-    const stateKey = `${sessionID}:${messageID}`;
+    const stateKey = getStateKey(sessionID, messageID);
     let state = retryState.get(stateKey);
 
     if (!state || Date.now() - state.lastAttemptTime > STATE_TIMEOUT_MS) {
@@ -599,7 +605,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
     });
   }
 
-  async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string) {
+  async function handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string): Promise<void> {
     // Resolve the target session for fallback processing
     const resolution = resolveTargetSessionWithDedup(sessionID);
     if (!resolution) {
@@ -623,6 +629,9 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         await client.session.abort({ path: { id: targetSessionID } });
       } catch (abortError) {
         // Silently ignore abort errors and continue with fallback
+        if (process.env.DEBUG) {
+          console.error(`[RateLimitFallback] Failed to abort session ${targetSessionID}:`, abortError);
+        }
       }
 
       await client.tui.showToast({
@@ -650,6 +659,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       // Get or create retry state for this message
       const state = getOrCreateRetryState(sessionID, lastUserMessage.info.id);
+      const stateKey = getStateKey(sessionID, lastUserMessage.info.id);
 
       // Select the next fallback model
       const nextModel = await selectFallbackModel(currentProviderID, currentModelID, state);
@@ -666,7 +676,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
             duration: 5000,
           },
         });
-        const stateKey = `${sessionID}:${lastUserMessage.info.id}`;
         retryState.delete(stateKey);
         fallbackInProgress.delete(targetSessionID);
         return;
@@ -696,18 +705,28 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       await retryWithModel(targetSessionID, nextModel, parts, hierarchy);
 
       // Clean up state
-      const stateKey = `${sessionID}:${lastUserMessage.info.id}`;
       retryState.delete(stateKey);
 
       // Explicitly clean up fallbackInProgress after cooldown period
       // This prevents memory leaks while maintaining the deduplication window
-      setTimeout(() => {
+      // Track the timer for cleanup
+      const timerKey = `${targetSessionID}_fallback`;
+      const existingTimer = activeFallbackTimers.get(timerKey);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+      const timer = setTimeout(() => {
         fallbackInProgress.delete(targetSessionID);
+        activeFallbackTimers.delete(timerKey);
       }, DEDUP_WINDOW_MS);
+      activeFallbackTimers.set(timerKey, timer);
 
     } catch (err) {
       fallbackInProgress.delete(targetSessionID);
       // Silently ignore fallback errors
+      if (process.env.DEBUG) {
+        console.error(`[RateLimitFallback] Fallback error for session ${sessionID}:`, err);
+      }
     }
   }
 
@@ -759,10 +778,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
     // Cleanup function to prevent memory leaks
     cleanup: () => {
       clearInterval(cleanupInterval);
-      const index = activeCleanupIntervals.indexOf(cleanupInterval);
-      if (index > -1) {
-        activeCleanupIntervals.splice(index, 1);
+
+      // Clear all active fallback timers
+      for (const timer of activeFallbackTimers.values()) {
+        clearTimeout(timer);
       }
+      activeFallbackTimers.clear();
 
       // Clean up all session hierarchies
       sessionHierarchies.clear();
