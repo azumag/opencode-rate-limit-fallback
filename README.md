@@ -59,7 +59,7 @@ Create a configuration file at one of these locations:
   "maxSubagentDepth": 10,
   "enableSubagentFallback": true,
   "fallbackModels": [
-    { "providerID": "anthropic", "modelID": "claude-sonnet-4-20250514" },
+    { "providerID": "anthropic", "modelID": "claude-3-5-sonnet-20250514" },
     { "providerID": "google", "modelID": "gemini-2.5-pro" },
     { "providerID": "google", "modelID": "gemini-2.5-flash" }
   ]
@@ -89,7 +89,7 @@ Create a configuration file at one of these locations:
 
 If no configuration is provided, the following models are used:
 
-1. `anthropic/claude-sonnet-4-20250514`
+1. `anthropic/claude-3-5-sonnet-20250514`
 2. `google/gemini-2.5-pro`
 3. `google/gemini-2.5-flash`
 
