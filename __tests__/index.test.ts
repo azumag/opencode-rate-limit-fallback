@@ -19,7 +19,6 @@ vi.mock('path', () => ({
 
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { clearAll as clearAllHierarchies } from '../src/session/SubagentTracker.js';
 
 // Helper to create mock client
 const createMockClient = () => ({
@@ -1399,8 +1398,6 @@ describe('Subagent Support', () => {
   });
 
   it('should respect enableSubagentFallback config option', async () => {
-    // Clear any existing module-level state from previous tests
-    clearAllHierarchies();
 
     const mockConfig = {
       enableSubagentFallback: false,
