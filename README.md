@@ -15,6 +15,7 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 - Toast notifications for user feedback
 - Subagent session support with automatic fallback propagation to parent sessions
 - Configurable maximum subagent nesting depth
+- **Metrics collection** to track rate limits, fallbacks, and model performance
 
 ## Installation
 
@@ -62,7 +63,15 @@ Create a configuration file at one of these locations:
     { "providerID": "anthropic", "modelID": "claude-3-5-sonnet-20250514" },
     { "providerID": "google", "modelID": "gemini-2.5-pro" },
     { "providerID": "google", "modelID": "gemini-2.5-flash" }
-  ]
+  ],
+  "metrics": {
+    "enabled": true,
+    "output": {
+      "console": true,
+      "format": "pretty"
+    },
+    "resetInterval": "daily"
+  }
 }
 ```
 
@@ -121,6 +130,128 @@ When OpenCode uses subagents (e.g., for complex tasks requiring specialized agen
 |--------|------|---------|-------------|
 | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
 | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
+
+## Metrics
+
+The plugin includes a metrics collection feature that tracks:
+- Rate limit events per provider/model
+- Fallback statistics (total, successful, failed, average duration)
+- Model performance (requests, successes, failures, response time)
+
+### Metrics Configuration
+
+Metrics can be configured via the `metrics` section in your config file:
+
+```json
+{
+  "metrics": {
+    "enabled": true,
+    "output": {
+      "console": true,
+      "file": "/path/to/metrics.json",
+      "format": "pretty"
+    },
+    "resetInterval": "daily"
+  }
+}
+```
+
+### Metrics Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable/disable metrics collection |
+| `output.console` | boolean | `true` | Print metrics to console |
+| `output.file` | string | `undefined` | Path to save metrics file |
+| `output.format` | string | `"pretty"` | Output format: `"pretty"`, `"json"`, or `"csv"` |
+| `resetInterval` | string | `"daily"` | Reset interval: `"hourly"`, `"daily"`, or `"weekly"` |
+
+### Output Formats
+
+**Pretty** (human-readable):
+```
+============================================================
+Rate Limit Fallback Metrics
+============================================================
+Started: 2025-02-10T02:00:00.000Z
+Generated: 2025-02-10T02:30:00.000Z
+
+Rate Limits:
+----------------------------------------
+  anthropic/claude-3-5-sonnet-20250514:
+    Count: 5
+    First: 2025-02-10T02:00:00.000Z
+    Last: 2025-02-10T02:29:00.000Z
+    Avg Interval: 3.50s
+
+Fallbacks:
+----------------------------------------
+  Total: 3
+  Successful: 2
+  Failed: 1
+  Avg Duration: 1.25s
+
+Model Performance:
+----------------------------------------
+  google/gemini-2.5-pro:
+    Requests: 10
+    Successes: 9
+    Failures: 1
+    Avg Response: 0.85s
+    Success Rate: 90.0%
+```
+
+**JSON** (machine-readable):
+```json
+{
+  "rateLimits": {
+    "anthropic/claude-3-5-sonnet-20250514": {
+      "count": 5,
+      "firstOccurrence": 1739148000000,
+      "lastOccurrence": 1739149740000,
+      "averageInterval": 3500
+    }
+  },
+  "fallbacks": {
+    "total": 3,
+    "successful": 2,
+    "failed": 1,
+    "averageDuration": 1250,
+    "byTargetModel": {
+      "google/gemini-2.5-pro": {
+        "usedAsFallback": 2,
+        "successful": 2,
+        "failed": 0
+      }
+    }
+  },
+  "modelPerformance": {
+    "google/gemini-2.5-pro": {
+      "requests": 10,
+      "successes": 9,
+      "failures": 1,
+      "averageResponseTime": 850
+    }
+  },
+  "startedAt": 1739148000000,
+  "generatedAt": 1739149800000
+}
+```
+
+**CSV** (spreadsheet-friendly):
+```
+=== RATE_LIMITS ===
+model,count,first_occurrence,last_occurrence,avg_interval_ms
+anthropic/claude-3-5-sonnet-20250514,5,1739148000000,1739149740000,3500
+
+=== FALLBACKS_SUMMARY ===
+total,successful,failed,avg_duration_ms
+3,2,1,1250
+
+=== MODEL_PERFORMANCE ===
+model,requests,successes,failures,avg_response_time_ms,success_rate
+google/gemini-2.5-pro,10,9,1,850,90.0
+```
 
 ## License
 
