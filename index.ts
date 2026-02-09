@@ -1,8 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import type { TextPartInput, FilePartInput } from "@opencode-ai/sdk";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { createLogger, type LogConfig } from "./logger.js";
+import { createLogger, type LogConfig, Logger } from "./logger.js";
 
 // Type definitions for OpenCode plugin API - based on actual SDK types
 type TextPart = { type: "text"; text: string };
@@ -22,6 +22,18 @@ interface FallbackModel {
  */
 type FallbackMode = "cycle" | "stop" | "retry-last";
 
+interface MetricsOutputConfig {
+  console: boolean;
+  file?: string;
+  format: "pretty" | "json" | "csv";
+}
+
+interface MetricsConfig {
+  enabled: boolean;
+  output: MetricsOutputConfig;
+  resetInterval: "hourly" | "daily" | "weekly";
+}
+
 interface PluginConfig {
   fallbackModels: FallbackModel[];
   cooldownMs: number;
@@ -30,6 +42,7 @@ interface PluginConfig {
   maxSubagentDepth?: number;
   enableSubagentFallback?: boolean;
   log?: LogConfig;
+  metrics?: MetricsConfig;
 }
 
 // Subagent fallback state types
@@ -84,6 +97,41 @@ interface SessionStatusEventProperties {
   [key: string]: unknown;
 }
 
+// Metrics types
+interface RateLimitMetrics {
+  count: number;
+  lastOccurrence: number;
+  firstOccurrence: number;
+  averageInterval?: number;
+}
+
+interface FallbackTargetMetrics {
+  usedAsFallback: number;
+  successful: number;
+  failed: number;
+}
+
+interface ModelPerformanceMetrics {
+  requests: number;
+  successes: number;
+  failures: number;
+  averageResponseTime?: number;
+}
+
+interface MetricsData {
+  rateLimits: Map<string, RateLimitMetrics>;
+  fallbacks: {
+    total: number;
+    successful: number;
+    failed: number;
+    averageDuration: number;
+    byTargetModel: Map<string, FallbackTargetMetrics>;
+  };
+  modelPerformance: Map<string, ModelPerformanceMetrics>;
+  startedAt: number;
+  generatedAt: number;
+}
+
 // Event type guards
 function isSessionErrorEvent(event: { type: string; properties: unknown }): event is { type: "session.error"; properties: SessionErrorEventProperties } {
   return event.type === "session.error" &&
@@ -123,6 +171,375 @@ const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
 
 const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last"];
 
+const VALID_RESET_INTERVALS = ["hourly", "daily", "weekly"] as const;
+type ResetInterval = typeof VALID_RESET_INTERVALS[number];
+
+const RESET_INTERVAL_MS: Record<ResetInterval, number> = {
+  hourly: 60 * 60 * 1000,
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+};
+
+// Metrics management
+class MetricsManager {
+  private metrics: MetricsData;
+  private config: MetricsConfig;
+  private logger: Logger;
+  private resetTimer: NodeJS.Timeout | null = null;
+
+  constructor(config: MetricsConfig, logger: Logger) {
+    this.config = config;
+    this.logger = logger;
+    this.metrics = {
+      rateLimits: new Map(),
+      fallbacks: {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        averageDuration: 0,
+        byTargetModel: new Map(),
+      },
+      modelPerformance: new Map(),
+      startedAt: Date.now(),
+      generatedAt: Date.now(),
+    };
+
+    if (this.config.enabled) {
+      this.startResetTimer();
+    }
+  }
+
+  private startResetTimer(): void {
+    if (this.resetTimer) {
+      clearInterval(this.resetTimer);
+    }
+
+    const intervalMs = RESET_INTERVAL_MS[this.config.resetInterval];
+    this.resetTimer = setInterval(() => {
+      this.reset();
+    }, intervalMs);
+  }
+
+  reset(): void {
+    this.metrics = {
+      rateLimits: new Map(),
+      fallbacks: {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        averageDuration: 0,
+        byTargetModel: new Map(),
+      },
+      modelPerformance: new Map(),
+      startedAt: Date.now(),
+      generatedAt: Date.now(),
+    };
+    this.logger.debug("Metrics reset");
+  }
+
+  recordRateLimit(providerID: string, modelID: string): void {
+    if (!this.config.enabled) return;
+
+    const key = getModelKey(providerID, modelID);
+    const now = Date.now();
+    const existing = this.metrics.rateLimits.get(key);
+
+    if (existing) {
+      const intervalMs = now - existing.lastOccurrence;
+      existing.count++;
+      existing.lastOccurrence = now;
+      existing.averageInterval = existing.averageInterval
+        ? (existing.averageInterval + intervalMs) / 2
+        : intervalMs;
+      this.metrics.rateLimits.set(key, existing);
+    } else {
+      this.metrics.rateLimits.set(key, {
+        count: 1,
+        firstOccurrence: now,
+        lastOccurrence: now,
+      });
+    }
+  }
+
+  recordFallbackStart(): number {
+    if (!this.config.enabled) return 0;
+
+    return Date.now();
+  }
+
+  recordFallbackSuccess(targetProviderID: string, targetModelID: string, startTime: number): void {
+    if (!this.config.enabled) return;
+
+    const duration = Date.now() - startTime;
+    const key = getModelKey(targetProviderID, targetModelID);
+
+    this.metrics.fallbacks.total++;
+    this.metrics.fallbacks.successful++;
+
+    // Update average duration
+    const totalDuration = this.metrics.fallbacks.averageDuration * (this.metrics.fallbacks.successful - 1);
+    this.metrics.fallbacks.averageDuration = (totalDuration + duration) / this.metrics.fallbacks.successful;
+
+    // Update target model metrics
+    const targetMetrics = this.metrics.fallbacks.byTargetModel.get(key) || {
+      usedAsFallback: 0,
+      successful: 0,
+      failed: 0,
+    };
+    targetMetrics.usedAsFallback++;
+    targetMetrics.successful++;
+    this.metrics.fallbacks.byTargetModel.set(key, targetMetrics);
+  }
+
+  recordFallbackFailure(): void {
+    if (!this.config.enabled) return;
+
+    this.metrics.fallbacks.total++;
+    this.metrics.fallbacks.failed++;
+  }
+
+  recordModelRequest(providerID: string, modelID: string): void {
+    if (!this.config.enabled) return;
+
+    const key = getModelKey(providerID, modelID);
+    const existing = this.metrics.modelPerformance.get(key) || {
+      requests: 0,
+      successes: 0,
+      failures: 0,
+    };
+    existing.requests++;
+    this.metrics.modelPerformance.set(key, existing);
+  }
+
+  recordModelSuccess(providerID: string, modelID: string, responseTime: number): void {
+    if (!this.config.enabled) return;
+
+    const key = getModelKey(providerID, modelID);
+    const existing = this.metrics.modelPerformance.get(key) || {
+      requests: 0,
+      successes: 0,
+      failures: 0,
+    };
+    existing.successes++;
+
+    // Update average response time
+    const totalTime = (existing.averageResponseTime || 0) * (existing.successes - 1);
+    existing.averageResponseTime = (totalTime + responseTime) / existing.successes;
+
+    this.metrics.modelPerformance.set(key, existing);
+  }
+
+  recordModelFailure(providerID: string, modelID: string): void {
+    if (!this.config.enabled) return;
+
+    const key = getModelKey(providerID, modelID);
+    const existing = this.metrics.modelPerformance.get(key) || {
+      requests: 0,
+      successes: 0,
+      failures: 0,
+    };
+    existing.failures++;
+    this.metrics.modelPerformance.set(key, existing);
+  }
+
+  getMetrics(): MetricsData {
+    this.metrics.generatedAt = Date.now();
+    return { ...this.metrics };
+  }
+
+  export(format: "pretty" | "json" | "csv" = "json"): string {
+    const metrics = this.getMetrics();
+
+    switch (format) {
+      case "pretty":
+        return this.exportPretty(metrics);
+      case "csv":
+        return this.exportCSV(metrics);
+      case "json":
+      default:
+        return JSON.stringify(this.toPlainObject(metrics), null, 2);
+    }
+  }
+
+  private toPlainObject(metrics: MetricsData): unknown {
+    return {
+      rateLimits: Object.fromEntries(
+        Array.from(metrics.rateLimits.entries()).map(([k, v]) => [k, v])
+      ),
+      fallbacks: {
+        ...metrics.fallbacks,
+        byTargetModel: Object.fromEntries(
+          Array.from(metrics.fallbacks.byTargetModel.entries()).map(([k, v]) => [k, v])
+        ),
+      },
+      modelPerformance: Object.fromEntries(
+        Array.from(metrics.modelPerformance.entries()).map(([k, v]) => [k, v])
+      ),
+      startedAt: metrics.startedAt,
+      generatedAt: metrics.generatedAt,
+    };
+  }
+
+  private exportPretty(metrics: MetricsData): string {
+    const lines: string[] = [];
+    lines.push("=" .repeat(60));
+    lines.push("Rate Limit Fallback Metrics");
+    lines.push("=" .repeat(60));
+    lines.push(`Started: ${new Date(metrics.startedAt).toISOString()}`);
+    lines.push(`Generated: ${new Date(metrics.generatedAt).toISOString()}`);
+    lines.push("");
+
+    // Rate Limits
+    lines.push("Rate Limits:");
+    lines.push("-".repeat(40));
+    if (metrics.rateLimits.size === 0) {
+      lines.push("  No rate limits recorded");
+    } else {
+      for (const [model, data] of metrics.rateLimits.entries()) {
+        lines.push(`  ${model}:`);
+        lines.push(`    Count: ${data.count}`);
+        lines.push(`    First: ${new Date(data.firstOccurrence).toISOString()}`);
+        lines.push(`    Last: ${new Date(data.lastOccurrence).toISOString()}`);
+        if (data.averageInterval) {
+          lines.push(`    Avg Interval: ${(data.averageInterval / 1000).toFixed(2)}s`);
+        }
+      }
+    }
+    lines.push("");
+
+    // Fallbacks
+    lines.push("Fallbacks:");
+    lines.push("-".repeat(40));
+    lines.push(`  Total: ${metrics.fallbacks.total}`);
+    lines.push(`  Successful: ${metrics.fallbacks.successful}`);
+    lines.push(`  Failed: ${metrics.fallbacks.failed}`);
+    if (metrics.fallbacks.averageDuration > 0) {
+      lines.push(`  Avg Duration: ${(metrics.fallbacks.averageDuration / 1000).toFixed(2)}s`);
+    }
+    if (metrics.fallbacks.byTargetModel.size > 0) {
+      lines.push("");
+      lines.push("  By Target Model:");
+      for (const [model, data] of metrics.fallbacks.byTargetModel.entries()) {
+        lines.push(`    ${model}:`);
+        lines.push(`      Used: ${data.usedAsFallback}`);
+        lines.push(`      Success: ${data.successful}`);
+        lines.push(`      Failed: ${data.failed}`);
+      }
+    }
+    lines.push("");
+
+    // Model Performance
+    lines.push("Model Performance:");
+    lines.push("-".repeat(40));
+    if (metrics.modelPerformance.size === 0) {
+      lines.push("  No performance data recorded");
+    } else {
+      for (const [model, data] of metrics.modelPerformance.entries()) {
+        lines.push(`  ${model}:`);
+        lines.push(`    Requests: ${data.requests}`);
+        lines.push(`    Successes: ${data.successes}`);
+        lines.push(`    Failures: ${data.failures}`);
+        if (data.averageResponseTime) {
+          lines.push(`    Avg Response: ${(data.averageResponseTime / 1000).toFixed(2)}s`);
+        }
+        if (data.requests > 0) {
+          const successRate = ((data.successes / data.requests) * 100).toFixed(1);
+          lines.push(`    Success Rate: ${successRate}%`);
+        }
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  private exportCSV(metrics: MetricsData): string {
+    const lines: string[] = [];
+
+    // Rate Limits CSV
+    lines.push("=== RATE_LIMITS ===");
+    lines.push("model,count,first_occurrence,last_occurrence,avg_interval_ms");
+    for (const [model, data] of metrics.rateLimits.entries()) {
+      lines.push([
+        model,
+        data.count,
+        data.firstOccurrence,
+        data.lastOccurrence,
+        data.averageInterval || 0,
+      ].join(","));
+    }
+    lines.push("");
+
+    // Fallbacks Summary CSV
+    lines.push("=== FALLBACKS_SUMMARY ===");
+    lines.push(`total,successful,failed,avg_duration_ms`);
+    lines.push([
+      metrics.fallbacks.total,
+      metrics.fallbacks.successful,
+      metrics.fallbacks.failed,
+      metrics.fallbacks.averageDuration || 0,
+    ].join(","));
+    lines.push("");
+
+    // Fallbacks by Model CSV
+    lines.push("=== FALLBACKS_BY_MODEL ===");
+    lines.push("model,used_as_fallback,successful,failed");
+    for (const [model, data] of metrics.fallbacks.byTargetModel.entries()) {
+      lines.push([
+        model,
+        data.usedAsFallback,
+        data.successful,
+        data.failed,
+      ].join(","));
+    }
+    lines.push("");
+
+    // Model Performance CSV
+    lines.push("=== MODEL_PERFORMANCE ===");
+    lines.push("model,requests,successes,failures,avg_response_time_ms,success_rate");
+    for (const [model, data] of metrics.modelPerformance.entries()) {
+      const successRate = data.requests > 0 ? ((data.successes / data.requests) * 100).toFixed(1) : "0";
+      lines.push([
+        model,
+        data.requests,
+        data.successes,
+        data.failures,
+        data.averageResponseTime || 0,
+        successRate,
+      ].join(","));
+    }
+
+    return lines.join("\n");
+  }
+
+  async report(): Promise<void> {
+    if (!this.config.enabled) return;
+
+    const output = this.export(this.config.output.format);
+
+    // Console output
+    if (this.config.output.console) {
+      console.log(output);
+    }
+
+    // File output
+    if (this.config.output.file) {
+      try {
+        writeFileSync(this.config.output.file, output, "utf-8");
+        this.logger.debug(`Metrics exported to ${this.config.output.file}`);
+      } catch (error) {
+        this.logger.warn(`Failed to write metrics to file: ${this.config.output.file}`, { error });
+      }
+    }
+  }
+
+  destroy(): void {
+    if (this.resetTimer) {
+      clearInterval(this.resetTimer);
+      this.resetTimer = null;
+    }
+  }
+}
+
 const DEFAULT_CONFIG: PluginConfig = {
   fallbackModels: DEFAULT_FALLBACK_MODELS,
   cooldownMs: 60 * 1000,
@@ -132,6 +549,14 @@ const DEFAULT_CONFIG: PluginConfig = {
     level: "warn",
     format: "simple",
     enableTimestamp: true,
+  },
+  metrics: {
+    enabled: false,
+    output: {
+      console: true,
+      format: "pretty",
+    },
+    resetInterval: "daily",
   },
 };
 
@@ -150,12 +575,23 @@ function loadConfig(directory: string): PluginConfig {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content);
         const mode = userConfig.fallbackMode;
+        const resetInterval = userConfig.metrics?.resetInterval;
+
         return {
           ...DEFAULT_CONFIG,
           ...userConfig,
           fallbackModels: userConfig.fallbackModels || DEFAULT_CONFIG.fallbackModels,
           fallbackMode: VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
           log: userConfig.log ? { ...DEFAULT_CONFIG.log, ...userConfig.log } : DEFAULT_CONFIG.log,
+          metrics: userConfig.metrics ? {
+            ...DEFAULT_CONFIG.metrics!,
+            ...userConfig.metrics,
+            output: userConfig.metrics.output ? {
+              ...DEFAULT_CONFIG.metrics!.output,
+              ...userConfig.metrics.output,
+            } : DEFAULT_CONFIG.metrics!.output,
+            resetInterval: VALID_RESET_INTERVALS.includes(resetInterval) ? resetInterval : DEFAULT_CONFIG.metrics!.resetInterval,
+          } : DEFAULT_CONFIG.metrics!,
         };
       } catch (error) {
         // Silently ignore config load errors - will be logged after logger is initialized
@@ -312,6 +748,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const sessionHierarchies = new Map<string, SessionHierarchy>(); // rootSessionID -> SessionHierarchy
   const sessionToRootMap = new Map<string, string>(); // sessionID -> rootSessionID
   const maxSubagentDepth = config.maxSubagentDepth ?? 10;
+
+  // Metrics management
+  const metricsManager = new MetricsManager(config.metrics ?? { ...DEFAULT_CONFIG.metrics! }, logger);
+
+  // Track model requests for performance metrics
+  const modelRequestStartTimes = new Map<string, number>(); // modelKey -> startTime
 
   // Helper functions for session hierarchy management
   function getOrCreateHierarchy(rootSessionID: string): SessionHierarchy {
@@ -667,6 +1109,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       propagateModelToSubagents(hierarchy, targetSessionID, model.providerID, model.modelID);
     }
 
+    // Record model request for metrics
+    metricsManager.recordModelRequest(model.providerID, model.modelID);
+    const modelKey = getModelKey(model.providerID, model.modelID);
+    modelRequestStartTimes.set(modelKey, Date.now());
+
     // Convert internal MessagePart to SDK-compatible format
     const sdkParts = convertPartsToSDKFormat(parts);
 
@@ -700,6 +1147,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
           currentProviderID = tracked.providerID;
           currentModelID = tracked.modelID;
         }
+      }
+
+      // Record rate limit metric
+      if (currentProviderID && currentModelID) {
+        metricsManager.recordRateLimit(currentProviderID, currentModelID);
       }
 
       // Abort current session with error handling
@@ -782,6 +1234,9 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         },
       });
 
+      // Record fallback start time
+      metricsManager.recordFallbackStart();
+
       // Track this message as a fallback message for completion detection
       // Note: The new message will have a new ID after prompting, but we use the original message ID
       // to correlate with the fallback in progress state
@@ -830,6 +1285,36 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
             fallbackInProgress.delete(fallbackKey);
             fallbackMessages.delete(fallbackKey);
             logger.debug(`Fallback completed for message ${info.id}`, { sessionID: info.sessionID });
+
+            // Record fallback success metric
+            const tracked = currentSessionModel.get(info.sessionID);
+            if (tracked) {
+              metricsManager.recordFallbackSuccess(tracked.providerID, tracked.modelID, fallbackInfo.timestamp);
+
+              // Record model performance metric
+              const modelKey = getModelKey(tracked.providerID, tracked.modelID);
+              const startTime = modelRequestStartTimes.get(modelKey);
+              if (startTime) {
+                const responseTime = Date.now() - startTime;
+                metricsManager.recordModelSuccess(tracked.providerID, tracked.modelID, responseTime);
+                modelRequestStartTimes.delete(modelKey);
+              }
+            }
+          }
+        } else if (info?.error && !isRateLimitError(info.error)) {
+          // Non-rate-limit error - record model failure metric
+          const tracked = currentSessionModel.get(info.sessionID);
+          if (tracked) {
+            metricsManager.recordModelFailure(tracked.providerID, tracked.modelID);
+
+            // Check if this was a fallback attempt and record failure
+            const fallbackKey = getStateKey(info.sessionID, info.id);
+            const fallbackInfo = fallbackMessages.get(fallbackKey);
+            if (fallbackInfo) {
+              metricsManager.recordFallbackFailure();
+              fallbackInProgress.delete(fallbackKey);
+              fallbackMessages.delete(fallbackKey);
+            }
           }
         }
       }
@@ -873,6 +1358,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       // Clean up fallback messages
       fallbackMessages.clear();
+
+      // Clean up metrics manager
+      metricsManager.destroy();
+
+      // Clean up model request start times
+      modelRequestStartTimes.clear();
     },
   };
 };

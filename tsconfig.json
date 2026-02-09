@@ -21,11 +21,14 @@
     "types": ["node"]
   },
   "include": [
-    "index.ts"
+    "index.ts",
+    "logger.ts",
+    "__tests__/**/*.ts"
   ],
   "exclude": [
     "node_modules",
     "dist",
-    "src"
+    "src",
+    "__tests__"
   ]
 }
