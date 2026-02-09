@@ -225,9 +225,6 @@ const STATE_TIMEOUT_MS = 30000;
 const CLEANUP_INTERVAL_MS = 300000; // 5 minutes
 const SESSION_ENTRY_TTL_MS = 3600000; // 1 hour
 
-// Track all active fallback timeout timers for cleanup
-const activeFallbackTimers: Map<string, NodeJS.Timeout> = new Map();
-
 /**
  * Extract toast message properties with fallback values
  */
@@ -276,7 +273,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   // Auto-adjust log level for headless mode to ensure visibility
   const logConfig = {
     ...config.log,
-    level: isHeadless ? 'info' : config.log.level,
+    level: isHeadless ? 'info' : (config.log?.level ?? 'warn'),
   };
 
   // Create logger instance
@@ -869,12 +866,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
     // Cleanup function to prevent memory leaks
     cleanup: () => {
       clearInterval(cleanupInterval);
-
-      // Clear all active fallback timers
-      for (const timer of activeFallbackTimers.values()) {
-        clearTimeout(timer);
-      }
-      activeFallbackTimers.clear();
 
       // Clean up all session hierarchies
       sessionHierarchies.clear();
