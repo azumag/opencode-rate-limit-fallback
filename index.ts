@@ -228,6 +228,45 @@ const SESSION_ENTRY_TTL_MS = 3600000; // 1 hour
 // Track all active fallback timeout timers for cleanup
 const activeFallbackTimers: Map<string, NodeJS.Timeout> = new Map();
 
+/**
+ * Extract toast message properties with fallback values
+ */
+function getToastMessage(toast: any): { title: string; message: string; variant: string } {
+  const title = toast?.body?.title || toast?.title || "Toast";
+  const message = toast?.body?.message || toast?.message || "";
+  const variant = toast?.body?.variant || toast?.variant || "info";
+  return { title, message, variant };
+}
+
+/**
+ * Safely show toast, falling back to console logging if TUI is missing or fails
+ */
+const safeShowToast = async (client: any, toast: any) => {
+  const { title, message, variant } = getToastMessage(toast);
+
+  const logToConsole = () => {
+    if (variant === "error") {
+      console.error(`[RateLimitFallback] ${title}: ${message}`);
+    } else if (variant === "warning") {
+      console.warn(`[RateLimitFallback] ${title}: ${message}`);
+    } else {
+      console.log(`[RateLimitFallback] ${title}: ${message}`);
+    }
+  };
+
+  try {
+    if (client.tui) {
+      await client.tui.showToast(toast);
+    } else {
+      // TUI doesn't exist - log to console
+      logToConsole();
+    }
+  } catch {
+    // TUI exists but failed to show toast - log to console
+    logToConsole();
+  }
+};
+
 export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const config = loadConfig(directory);
 
@@ -502,7 +541,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
           if (!isLastModelCurrent && !isModelRateLimited(lastModel.providerID, lastModel.modelID)) {
             // Use the last model for one more try
             nextModel = lastModel;
-            await client.tui.showToast({
+            await safeShowToast(client, {
               body: {
                 title: "Last Resort",
                 message: `Trying ${lastModel.modelID} one more time...`,
@@ -621,7 +660,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       },
     });
 
-    await client.tui.showToast({
+    await safeShowToast(client, {
       body: {
         title: "Fallback Successful",
         message: `Now using ${model.modelID}`,
@@ -658,7 +697,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         logger.debug(`Failed to abort session ${targetSessionID}`, { error: abortError });
       }
 
-      await client.tui.showToast({
+      await safeShowToast(client, {
         body: {
           title: "Rate Limit Detected",
           message: `Switching from ${currentModelID || 'current model'}...`,
@@ -690,7 +729,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       // Show error if no model is available
       if (!nextModel) {
-        await client.tui.showToast({
+        await safeShowToast(client, {
           body: {
             title: "No Fallback Available",
             message: config.fallbackMode === "stop"
@@ -716,7 +755,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         return;
       }
 
-      await client.tui.showToast({
+      await safeShowToast(client, {
         body: {
           title: "Retrying",
           message: `Using ${nextModel.providerID}/${nextModel.modelID}`,
@@ -747,8 +786,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
     } catch (err) {
       fallbackInProgress.delete(targetSessionID);
-      // Silently ignore fallback errors
-      logger.debug(`Fallback error for session ${sessionID}`, { error: err });
+      // Silently ignore fallback errors - log only limited error info
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorName = err instanceof Error ? err.name : undefined;
+      logger.debug(`Fallback error for session ${sessionID}`, {
+        error: errorMessage,
+        name: errorName,
+      });
     }
   }
 

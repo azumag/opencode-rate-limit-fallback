@@ -99,7 +99,7 @@ describe('Headless Mode (No TUI)', () => {
 
         // Verify logs were printed (using console spy because logger writes to console)
         // "Rate Limit Detected" is warning
-        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[WARN] [RateLimitFallback] Rate Limit Detected'));
+        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[RateLimitFallback] Rate Limit Detected'));
 
         // "Retrying" is info
         // Note: Default log level is 'warn', so info logs might not show up unless configured.
@@ -108,6 +108,16 @@ describe('Headless Mode (No TUI)', () => {
     });
 
     it('should handle toast with different structures in headless mode', async () => {
+        // Mock messages to return valid data so fallback can happen
+        mockClient.session.messages.mockResolvedValue({
+            data: [
+                {
+                    info: { id: 'msg1', role: 'user' },
+                    parts: [{ type: 'text', text: 'test message' }],
+                },
+            ],
+        });
+
         // Test with standard toast structure
         await expect(pluginInstance.event?.({
             event: {
@@ -175,7 +185,7 @@ describe('TUI Error Handling (Toast Fails)', () => {
         // Verify prompt called (fallback happened)
         expect(mockClient.session.prompt).toHaveBeenCalled();
         // Verify logs were printed instead of toast
-        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[WARN] [RateLimitFallback] Rate Limit Detected'));
+        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[RateLimitFallback] Rate Limit Detected'));
     });
 
     it('should handle missing toast.body when TUI showToast fails', async () => {
