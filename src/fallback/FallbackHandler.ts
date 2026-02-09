@@ -4,17 +4,11 @@
 
 import type { Logger } from '../../logger.js';
 import type { FallbackModel, PluginConfig, OpenCodeClient, MessagePart, SessionHierarchy } from '../types/index.js';
+import { SESSION_ENTRY_TTL_MS } from '../types/index.js';
 import { MetricsManager } from '../metrics/MetricsManager.js';
 import { ModelSelector } from './ModelSelector.js';
 import { extractMessageParts, convertPartsToSDKFormat, safeShowToast, getStateKey, getModelKey, DEDUP_WINDOW_MS, STATE_TIMEOUT_MS } from '../utils/helpers.js';
-
-/**
- * Hierarchy resolver functions
- */
-export type HierarchyResolver = {
-  getRootSession: (sessionID: string) => string | null;
-  getHierarchy: (sessionID: string) => SessionHierarchy | null;
-};
+import type { SubagentTracker } from '../session/SubagentTracker.js';
 
 /**
  * Fallback Handler class for orchestrating the fallback retry flow
@@ -33,16 +27,16 @@ export class FallbackHandler {
   // Metrics manager reference
   private metricsManager: MetricsManager;
 
-  // Hierarchy resolver
-  private hierarchyResolver: HierarchyResolver;
+  // Subagent tracker reference
+  private subagentTracker: SubagentTracker;
 
-  constructor(config: PluginConfig, client: OpenCodeClient, logger: Logger, metricsManager: MetricsManager, hierarchyResolver: HierarchyResolver) {
+  constructor(config: PluginConfig, client: OpenCodeClient, logger: Logger, metricsManager: MetricsManager, subagentTracker: SubagentTracker) {
     this.config = config;
     this.client = client;
     this.logger = logger;
     this.modelSelector = new ModelSelector(config, client);
     this.metricsManager = metricsManager;
-    this.hierarchyResolver = hierarchyResolver;
+    this.subagentTracker = subagentTracker;
 
     this.currentSessionModel = new Map();
     this.modelRequestStartTimes = new Map();
@@ -168,10 +162,10 @@ export class FallbackHandler {
   async handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string): Promise<void> {
     try {
 
-      // Get root session and hierarchy using resolver
-      const rootSessionID = this.hierarchyResolver.getRootSession(sessionID);
+      // Get root session and hierarchy using subagent tracker
+      const rootSessionID = this.subagentTracker.getRootSession(sessionID);
       const targetSessionID = rootSessionID || sessionID;
-      const hierarchy = this.hierarchyResolver.getHierarchy(sessionID);
+      const hierarchy = this.subagentTracker.getHierarchy(sessionID);
 
       // If no model info provided, try to get from tracked session model
       if (!currentProviderID || !currentModelID) {
@@ -368,7 +362,6 @@ export class FallbackHandler {
    * Clean up stale entries
    */
   cleanupStaleEntries(): void {
-    const { STATE_TIMEOUT_MS, SESSION_ENTRY_TTL_MS } = require('../types/index.js');
     const now = Date.now();
 
     for (const [sessionID, entry] of this.currentSessionModel.entries()) {

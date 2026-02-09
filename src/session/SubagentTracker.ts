@@ -6,129 +6,199 @@ import type { SessionHierarchy, SubagentSession, PluginConfig } from '../types/i
 import { SESSION_ENTRY_TTL_MS } from '../types/index.js';
 
 /**
- * Session Hierarchy storage
+ * SubagentTracker class for managing session hierarchies
  */
-const sessionHierarchies = new Map<string, SessionHierarchy>();
-const sessionToRootMap = new Map<string, string>();
+export class SubagentTracker {
+  private sessionHierarchies: Map<string, SessionHierarchy>;
+  private sessionToRootMap: Map<string, string>;
+  private maxSubagentDepth: number;
 
-let maxSubagentDepth = 10;
-
-/**
- * Initialize subagent tracker with config
- */
-export function initSubagentTracker(config: PluginConfig): void {
-  maxSubagentDepth = config.maxSubagentDepth ?? 10;
-}
-
-/**
- * Register a new subagent in the hierarchy
- */
-export function registerSubagent(sessionID: string, parentSessionID: string, config: PluginConfig): boolean {
-  // Validate parent session exists
-  // Parent session must either be registered in sessionToRootMap or be a new root session
-  const parentRootSessionID = sessionToRootMap.get(parentSessionID);
-
-  // Determine root session - if parent doesn't exist, treat it as a new root
-  const rootSessionID = parentRootSessionID || parentSessionID;
-
-  // If parent is not a subagent but we're treating it as a root, create a hierarchy for it
-  // This allows sessions to become roots when their first subagent is registered
-  const hierarchy = getOrCreateHierarchy(rootSessionID, config);
-
-  const parentSubagent = hierarchy.subagents.get(parentSessionID);
-  const depth = parentSubagent ? parentSubagent.depth + 1 : 1;
-
-  // Enforce max depth
-  if (depth > maxSubagentDepth) {
-    return false;
+  constructor(config: PluginConfig) {
+    this.sessionHierarchies = new Map();
+    this.sessionToRootMap = new Map();
+    this.maxSubagentDepth = config.maxSubagentDepth ?? 10;
   }
 
-  const subagent: SubagentSession = {
-    sessionID,
-    parentSessionID,
-    depth,
-    fallbackState: "none",
-    createdAt: Date.now(),
-    lastActivity: Date.now(),
-  };
+  /**
+   * Register a new subagent in the hierarchy
+   */
+  registerSubagent(sessionID: string, parentSessionID: string): boolean {
+    // Validate parent session exists
+    // Parent session must either be registered in sessionToRootMap or be a new root session
+    const parentRootSessionID = this.sessionToRootMap.get(parentSessionID);
 
-  hierarchy.subagents.set(sessionID, subagent);
-  sessionToRootMap.set(sessionID, rootSessionID);
-  hierarchy.lastActivity = Date.now();
+    // Determine root session - if parent doesn't exist, treat it as a new root
+    const rootSessionID = parentRootSessionID || parentSessionID;
 
-  return true;
-}
+    // If parent is not a subagent but we're treating it as a root, create a hierarchy for it
+    // This allows sessions to become roots when their first subagent is registered
+    const hierarchy = this.getOrCreateHierarchy(rootSessionID);
 
-/**
- * Get or create hierarchy for a root session
- */
-function getOrCreateHierarchy(rootSessionID: string, config: PluginConfig): SessionHierarchy {
-  let hierarchy = sessionHierarchies.get(rootSessionID);
-  if (!hierarchy) {
-    hierarchy = {
-      rootSessionID,
-      subagents: new Map(),
-      sharedFallbackState: "none",
-      sharedConfig: config,
+    const parentSubagent = hierarchy.subagents.get(parentSessionID);
+    const depth = parentSubagent ? parentSubagent.depth + 1 : 1;
+
+    // Enforce max depth
+    if (depth > this.maxSubagentDepth) {
+      return false;
+    }
+
+    const subagent: SubagentSession = {
+      sessionID,
+      parentSessionID,
+      depth,
+      fallbackState: "none",
       createdAt: Date.now(),
       lastActivity: Date.now(),
     };
-    sessionHierarchies.set(rootSessionID, hierarchy);
-    sessionToRootMap.set(rootSessionID, rootSessionID);
+
+    hierarchy.subagents.set(sessionID, subagent);
+    this.sessionToRootMap.set(sessionID, rootSessionID);
+    hierarchy.lastActivity = Date.now();
+
+    return true;
   }
-  return hierarchy;
-}
 
-/**
- * Get root session ID for a session
- */
-export function getRootSession(sessionID: string): string | null {
-  return sessionToRootMap.get(sessionID) || null;
-}
+  /**
+   * Get root session ID for a session
+   */
+  getRootSession(sessionID: string): string | null {
+    return this.sessionToRootMap.get(sessionID) || null;
+  }
 
-/**
- * Get hierarchy for a session
- */
-export function getHierarchy(sessionID: string): SessionHierarchy | null {
-  const rootSessionID = getRootSession(sessionID);
-  return rootSessionID ? sessionHierarchies.get(rootSessionID) || null : null;
-}
+  /**
+   * Get hierarchy for a session
+   */
+  getHierarchy(sessionID: string): SessionHierarchy | null {
+    const rootSessionID = this.getRootSession(sessionID);
+    return rootSessionID && this.sessionHierarchies.has(rootSessionID) ? this.sessionHierarchies.get(rootSessionID)! : null;
+  }
 
-/**
- * Get all session hierarchies (for cleanup)
- */
-export function getAllHierarchies(): Map<string, SessionHierarchy> {
-  return sessionHierarchies;
-}
+  /**
+   * Get or create hierarchy for a root session
+   */
+  private getOrCreateHierarchy(rootSessionID: string): SessionHierarchy {
+    let hierarchy = this.sessionHierarchies.get(rootSessionID);
+    if (!hierarchy) {
+      hierarchy = {
+        rootSessionID,
+        subagents: new Map(),
+        sharedFallbackState: "none",
+        sharedConfig: {
+          fallbackModels: [],
+          cooldownMs: 60 * 1000,
+          enabled: true,
+          fallbackMode: "cycle",
+          log: {
+            level: "warn",
+            format: "simple",
+            enableTimestamp: true,
+          },
+          metrics: {
+            enabled: false,
+            output: {
+              console: true,
+              format: "pretty",
+            },
+            resetInterval: "daily",
+          },
+        },
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+      };
+      this.sessionHierarchies.set(rootSessionID, hierarchy);
+      this.sessionToRootMap.set(rootSessionID, rootSessionID);
+    }
+    return hierarchy;
+  }
 
-/**
- * Get session to root map (for cleanup)
- */
-export function getSessionToRootMap(): Map<string, string> {
-  return sessionToRootMap;
-}
-
-/**
- * Clean up stale hierarchies
- */
-export function cleanupStaleEntries(): void {
-  const now = Date.now();
-  for (const [rootSessionID, hierarchy] of sessionHierarchies.entries()) {
-    if (now - hierarchy.lastActivity > SESSION_ENTRY_TTL_MS) {
-      // Clean up all subagents in this hierarchy
-      for (const subagentID of hierarchy.subagents.keys()) {
-        sessionToRootMap.delete(subagentID);
+  /**
+   * Clean up stale hierarchies
+   */
+  cleanupStaleEntries(): void {
+    const now = Date.now();
+    for (const [rootSessionID, hierarchy] of this.sessionHierarchies.entries()) {
+      if (now - hierarchy.lastActivity > SESSION_ENTRY_TTL_MS) {
+        // Clean up all subagents in this hierarchy
+        for (const subagentID of hierarchy.subagents.keys()) {
+          this.sessionToRootMap.delete(subagentID);
+        }
+        this.sessionHierarchies.delete(rootSessionID);
+        this.sessionToRootMap.delete(rootSessionID);
       }
-      sessionHierarchies.delete(rootSessionID);
-      sessionToRootMap.delete(rootSessionID);
     }
   }
+
+  /**
+   * Clean up all hierarchies
+   */
+  clearAll(): void {
+    this.sessionHierarchies.clear();
+    this.sessionToRootMap.clear();
+  }
+}
+
+// ============================================================================
+// Backward Compatibility Layer - Function exports using global instance
+// ============================================================================
+
+let globalSubagentTracker: SubagentTracker | null = null;
+
+/**
+ * Initialize subagent tracker with config (backward compatibility)
+ */
+export function initSubagentTracker(config: PluginConfig): void {
+  globalSubagentTracker = new SubagentTracker(config);
 }
 
 /**
- * Clean up all hierarchies
+ * Register a new subagent in the hierarchy (backward compatibility)
+ */
+export function registerSubagent(sessionID: string, parentSessionID: string, config: PluginConfig): boolean {
+  if (!globalSubagentTracker) {
+    // Initialize with default config if not already initialized
+    globalSubagentTracker = new SubagentTracker(config);
+  }
+  return globalSubagentTracker.registerSubagent(sessionID, parentSessionID);
+}
+
+/**
+ * Get root session ID for a session (backward compatibility)
+ */
+export function getRootSession(sessionID: string): string | null {
+  return globalSubagentTracker?.getRootSession(sessionID) ?? null;
+}
+
+/**
+ * Get hierarchy for a session (backward compatibility)
+ */
+export function getHierarchy(sessionID: string): SessionHierarchy | null {
+  return globalSubagentTracker?.getHierarchy(sessionID) ?? null;
+}
+
+/**
+ * Get all session hierarchies (for cleanup - backward compatibility)
+ */
+export function getAllHierarchies(): Map<string, SessionHierarchy> {
+  return globalSubagentTracker ? (globalSubagentTracker as any).sessionHierarchies : new Map();
+}
+
+/**
+ * Get session to root map (for cleanup - backward compatibility)
+ */
+export function getSessionToRootMap(): Map<string, string> {
+  return globalSubagentTracker ? (globalSubagentTracker as any).sessionToRootMap : new Map();
+}
+
+/**
+ * Clean up stale hierarchies (backward compatibility)
+ */
+export function cleanupStaleEntries(): void {
+  globalSubagentTracker?.cleanupStaleEntries();
+}
+
+/**
+ * Clean up all hierarchies (backward compatibility)
  */
 export function clearAll(): void {
-  sessionHierarchies.clear();
-  sessionToRootMap.clear();
+  globalSubagentTracker?.clearAll();
 }

@@ -1,12 +1,10 @@
 /**
  * Rate Limit Fallback Plugin - Main entry point
- * 
+ *
  * This plugin automatically switches to fallback models when rate limited
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
 import { createLogger } from "./logger.js";
 
 // Import modular components
@@ -19,14 +17,7 @@ import { MetricsManager } from "./src/metrics/MetricsManager.js";
 import { FallbackHandler } from "./src/fallback/FallbackHandler.js";
 import { loadConfig } from "./src/utils/config.js";
 import { isRateLimitError } from "./src/utils/errorDetection.js";
-import {
-  initSubagentTracker,
-  registerSubagent,
-  getRootSession,
-  getHierarchy,
-  cleanupStaleEntries as clearHierarchyEntries,
-  clearAll as clearAllHierarchies,
-} from "./src/session/SubagentTracker.js";
+import { SubagentTracker } from "./src/session/SubagentTracker.js";
 import { CLEANUP_INTERVAL_MS } from "./src/types/index.js";
 
 // ============================================================================
@@ -93,45 +84,20 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   // Create logger instance
   const logger = createLogger(logConfig, "RateLimitFallback");
 
-  // Log config load errors (if any) after logger is initialized
-  const homedir = process.env.HOME || "";
-  const configPaths = [
-    join(directory, ".opencode", "rate-limit-fallback.json"),
-    join(directory, "rate-limit-fallback.json"),
-    join(homedir, ".opencode", "rate-limit-fallback.json"),
-    join(homedir, ".config", "opencode", "rate-limit-fallback.json"),
-  ];
-
-  for (const configPath of configPaths) {
-    if (existsSync(configPath)) {
-      try {
-        readFileSync(configPath, "utf-8");
-      } catch (error) {
-        logger.error(`Failed to load config from ${configPath}`, { error });
-      }
-    }
-  }
-
   if (!config.enabled) {
     return {};
   }
 
   // Initialize components
-  initSubagentTracker(config);
+  const subagentTracker = new SubagentTracker(config);
 
   const metricsManager = new MetricsManager(config.metrics ?? { enabled: false, output: { console: true, format: "pretty" }, resetInterval: "daily" }, logger);
-  
-  // Create hierarchy resolver to avoid circular dependency
-  const hierarchyResolver = {
-    getRootSession: getRootSession,
-    getHierarchy: getHierarchy,
-  };
-  
-  const fallbackHandler = new FallbackHandler(config, client, logger, metricsManager, hierarchyResolver);
+
+  const fallbackHandler = new FallbackHandler(config, client, logger, metricsManager, subagentTracker);
 
   // Cleanup stale entries periodically
   const cleanupInterval = setInterval(() => {
-    clearHierarchyEntries();
+    subagentTracker.cleanupStaleEntries();
     fallbackHandler.cleanupStaleEntries();
   }, CLEANUP_INTERVAL_MS);
 
@@ -184,14 +150,14 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       if (isSubagentSessionCreatedEvent(rawEvent)) {
         const { sessionID, parentSessionID } = rawEvent.properties;
         if (config.enableSubagentFallback !== false) {
-          registerSubagent(sessionID, parentSessionID, config);
+          subagentTracker.registerSubagent(sessionID, parentSessionID);
         }
       }
     },
     // Cleanup function to prevent memory leaks
     cleanup: () => {
       clearInterval(cleanupInterval);
-      clearAllHierarchies();
+      subagentTracker.clearAll();
       metricsManager.destroy();
       fallbackHandler.destroy();
     },
