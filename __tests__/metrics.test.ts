@@ -3,6 +3,13 @@ import { createLogger } from '../logger';
 import { MetricsManager } from '../src/metrics/MetricsManager';
 import type { MetricsConfig } from '../src/types';
 
+// Mock fs module
+vi.mock('fs', () => ({
+  writeFileSync: vi.fn(),
+}));
+
+import { writeFileSync } from 'fs';
+
 describe('MetricsManager', () => {
   let metricsManager: MetricsManager;
   let logger: ReturnType<typeof createLogger>;
@@ -11,7 +18,7 @@ describe('MetricsManager', () => {
 
   beforeEach(() => {
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    writeFileSyncSpy = vi.spyOn(require('fs'), 'writeFileSync').mockImplementation(() => {});
+    writeFileSyncSpy = vi.mocked(writeFileSync).mockImplementation(() => {});
     logger = createLogger({ level: 'silent' }, 'MetricsTest');
   });
 
