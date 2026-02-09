@@ -270,8 +270,25 @@ const safeShowToast = async (client: any, toast: any) => {
 export const RateLimitFallback: Plugin = async ({ client, directory }) => {
   const config = loadConfig(directory);
 
+  // Detect headless mode (no TUI available, e.g., `opencode run`)
+  const isHeadless = !client.tui;
+
+  // In headless mode, auto-elevate log level to "info" for better visibility
+  // unless the user explicitly set a log level via environment variable
+  const effectiveLogConfig = { ...config.log };
+  if (isHeadless && !process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL) {
+    const currentLevel = effectiveLogConfig?.level || "warn";
+    if (currentLevel === "warn" || currentLevel === "error") {
+      effectiveLogConfig.level = "info";
+    }
+  }
+
   // Create logger instance
-  const logger = createLogger(config.log, "RateLimitFallback");
+  const logger = createLogger(effectiveLogConfig, "RateLimitFallback");
+
+  if (isHeadless) {
+    logger.info("Headless mode detected - log level elevated for console visibility");
+  }
 
   // Log config load errors (if any) after logger is initialized
   const homedir = process.env.HOME || "";
@@ -660,6 +677,8 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
       },
     });
 
+    logger.info(`Fallback successful - now using ${model.providerID}/${model.modelID}`);
+
     await safeShowToast(client, {
       body: {
         title: "Fallback Successful",
@@ -697,6 +716,8 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         logger.debug(`Failed to abort session ${targetSessionID}`, { error: abortError });
       }
 
+      logger.info(`Rate limit detected on ${currentModelID || 'current model'}, initiating fallback`);
+
       await safeShowToast(client, {
         body: {
           title: "Rate Limit Detected",
@@ -729,6 +750,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
       // Show error if no model is available
       if (!nextModel) {
+        logger.info("No fallback model available - all models exhausted or rate limited");
         await safeShowToast(client, {
           body: {
             title: "No Fallback Available",
@@ -754,6 +776,8 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
         fallbackInProgress.delete(targetSessionID);
         return;
       }
+
+      logger.info(`Retrying with fallback model: ${nextModel.providerID}/${nextModel.modelID}`);
 
       await safeShowToast(client, {
         body: {

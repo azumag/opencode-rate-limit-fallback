@@ -40,7 +40,20 @@ const createFailingTuiClient = () => ({
     },
 });
 
+// Helper to create mock client WITH working TUI
+const createTuiClient = () => ({
+    session: {
+        abort: vi.fn().mockResolvedValue(undefined),
+        messages: vi.fn(),
+        prompt: vi.fn().mockResolvedValue(undefined),
+    },
+    tui: {
+        showToast: vi.fn().mockResolvedValue(undefined),
+    },
+});
+
 // Spy on console methods at the top level for all tests
+const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 const consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -52,6 +65,7 @@ describe('Headless Mode (No TUI)', () => {
     beforeEach(async () => {
         vi.resetAllMocks();
         vi.mocked(existsSync).mockReturnValue(false);
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
         mockClient = createHeadlessClient();
 
         const result = await RateLimitFallback({
@@ -98,13 +112,49 @@ describe('Headless Mode (No TUI)', () => {
         expect(mockClient.session.prompt).toHaveBeenCalled();
 
         // Verify logs were printed (using console spy because logger writes to console)
-        // "Rate Limit Detected" is warning
+        // "Rate Limit Detected" is warning (from safeShowToast console fallback)
         expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[RateLimitFallback] Rate Limit Detected'));
+    });
 
-        // "Retrying" is info
-        // Note: Default log level is 'warn', so info logs might not show up unless configured.
-        // However, we didn't change default config level suitable for headless yet.
-        // Let's verify at least warning is logged.
+    it('should auto-elevate log level to info in headless mode', async () => {
+        // Mock messages to return valid data
+        mockClient.session.messages.mockResolvedValue({
+            data: [
+                {
+                    info: { id: 'msg1', role: 'user' },
+                    parts: [{ type: 'text', text: 'test message' }],
+                },
+            ],
+        });
+
+        // Simulate rate limit error
+        const error = { name: "APIError", data: { statusCode: 429 } };
+
+        await pluginInstance.event?.({
+            event: {
+                type: 'session.error',
+                properties: { sessionID: 'test-session', error },
+            },
+        });
+
+        // In headless mode, the logger level should be auto-elevated to "info"
+        // so logger.info() messages should appear in console.log output
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Rate limit detected on')
+        );
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Retrying with fallback model')
+        );
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Fallback successful')
+        );
+    });
+
+    it('should log headless mode detection message', async () => {
+        // The headless mode detection message should be logged during plugin init
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Headless mode detected')
+        );
     });
 
     it('should handle toast with different structures in headless mode', async () => {
@@ -132,6 +182,255 @@ describe('Headless Mode (No TUI)', () => {
         // Verify logging works even without toast.body
         expect(consoleWarnSpy).toHaveBeenCalled();
     });
+
+    it('should log "no fallback available" when all models exhausted in headless mode', async () => {
+        // Configure with empty fallback models
+        const mockConfig = { fallbackModels: [] };
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+        mockClient = createHeadlessClient();
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+        pluginInstance = result;
+
+        mockClient.session.messages.mockResolvedValue({
+            data: [
+                {
+                    info: { id: 'msg1', role: 'user' },
+                    parts: [{ type: 'text', text: 'test message' }],
+                },
+            ],
+        });
+
+        await pluginInstance.event?.({
+            event: {
+                type: 'session.error',
+                properties: {
+                    sessionID: 'test-session',
+                    error: { name: "APIError", data: { statusCode: 429 } },
+                },
+            },
+        });
+
+        // Should log "no fallback model available" via logger.info
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('No fallback model available')
+        );
+    });
+});
+
+describe('Headless Mode - Log Level Respects User Config', () => {
+    afterEach(() => {
+        vi.clearAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+    });
+
+    it('should respect user-configured log level "debug" in headless mode', async () => {
+        vi.resetAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+
+        const mockConfig = {
+            log: { level: "debug", format: "simple", enableTimestamp: true },
+        };
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+        const mockClient = createHeadlessClient();
+        await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        // "debug" is more verbose than "info", so it should NOT be elevated
+        // The headless detection message should still appear (it's logger.info, visible at debug level)
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Headless mode detected')
+        );
+    });
+
+    it('should respect user-configured log level "info" in headless mode', async () => {
+        vi.resetAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+
+        const mockConfig = {
+            log: { level: "info", format: "simple", enableTimestamp: true },
+        };
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+        const mockClient = createHeadlessClient();
+        await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        // "info" is already at the target level, no elevation needed
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Headless mode detected')
+        );
+    });
+
+    it('should respect RATE_LIMIT_FALLBACK_LOG_LEVEL env var in headless mode', async () => {
+        vi.resetAllMocks();
+        process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL = 'silent';
+
+        const mockClient = createHeadlessClient();
+        vi.mocked(existsSync).mockReturnValue(false);
+
+        await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        // When env var is set to silent, headless auto-elevation should NOT override it
+        expect(consoleLogSpy).not.toHaveBeenCalledWith(
+            expect.stringContaining('Headless mode detected')
+        );
+    });
+
+    it('should auto-elevate "warn" to "info" in headless mode', async () => {
+        vi.resetAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+
+        // Default config has level "warn"
+        vi.mocked(existsSync).mockReturnValue(false);
+
+        const mockClient = createHeadlessClient();
+        await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        // "warn" should be auto-elevated to "info" in headless mode
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Headless mode detected')
+        );
+    });
+
+    it('should auto-elevate "error" to "info" in headless mode', async () => {
+        vi.resetAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+
+        const mockConfig = {
+            log: { level: "error", format: "simple", enableTimestamp: true },
+        };
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+        const mockClient = createHeadlessClient();
+        await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        // "error" should be auto-elevated to "info" in headless mode
+        expect(consoleLogSpy).toHaveBeenCalledWith(
+            expect.stringContaining('Headless mode detected')
+        );
+    });
+});
+
+describe('Non-Headless Mode - Backward Compatibility', () => {
+    afterEach(() => {
+        vi.clearAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+    });
+
+    it('should NOT auto-elevate log level when TUI is present', async () => {
+        vi.resetAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+        vi.mocked(existsSync).mockReturnValue(false);
+
+        const mockClient = createTuiClient();
+        await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        // When TUI is present, log level should stay at "warn" (default)
+        // So logger.info("Headless mode detected...") should NOT appear
+        expect(consoleLogSpy).not.toHaveBeenCalledWith(
+            expect.stringContaining('Headless mode detected')
+        );
+    });
+
+    it('should suppress info-level logger messages in non-headless mode with default config', async () => {
+        vi.resetAllMocks();
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
+        vi.mocked(existsSync).mockReturnValue(false);
+
+        const mockClient = createTuiClient();
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        mockClient.session.messages.mockResolvedValue({
+            data: [
+                {
+                    info: { id: 'msg1', role: 'user' },
+                    parts: [{ type: 'text', text: 'test message' }],
+                },
+            ],
+        });
+
+        await result.event?.({
+            event: {
+                type: 'session.error',
+                properties: {
+                    sessionID: 'test-session',
+                    error: { name: "APIError", data: { statusCode: 429 } },
+                },
+            },
+        });
+
+        // In non-headless mode with default "warn" level, logger.info() calls
+        // should NOT appear (they are suppressed)
+        expect(consoleLogSpy).not.toHaveBeenCalledWith(
+            expect.stringContaining('Rate limit detected on')
+        );
+        expect(consoleLogSpy).not.toHaveBeenCalledWith(
+            expect.stringContaining('Retrying with fallback model')
+        );
+
+        // But toast notifications should still work via TUI
+        expect(mockClient.tui.showToast).toHaveBeenCalled();
+    });
 });
 
 describe('TUI Error Handling (Toast Fails)', () => {
@@ -141,6 +440,7 @@ describe('TUI Error Handling (Toast Fails)', () => {
     beforeEach(async () => {
         vi.resetAllMocks();
         vi.mocked(existsSync).mockReturnValue(false);
+        delete process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL;
         mockClient = createFailingTuiClient();
 
         const result = await RateLimitFallback({

@@ -93,6 +93,20 @@ If no configuration is provided, the following models are used:
 2. `google/gemini-2.5-pro`
 3. `google/gemini-2.5-flash`
 
+### Headless Mode (`opencode run`)
+
+When running in headless mode (no TUI available), the plugin automatically:
+
+- **Detects headless mode** by checking for the absence of `client.tui`
+- **Elevates the log level** to `"info"` (from the default `"warn"`) so that fallback status messages are visible in console output
+- **Logs key events** including rate limit detection, model switching, fallback success/failure
+
+This ensures you can monitor fallback behavior in CI/CD pipelines, scripts, and other non-interactive environments.
+
+The auto-elevation respects explicit overrides:
+- If you set `RATE_LIMIT_FALLBACK_LOG_LEVEL` environment variable, headless auto-elevation is skipped
+- If your config already uses `"info"` or `"debug"` level, no change is needed
+
 ## How It Works
 
 1. **Detection**: The plugin listens for rate limit errors via:
