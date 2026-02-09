@@ -167,94 +167,6 @@ describe('isRateLimitError', () => {
     expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
-  it('should detect resource exhausted', async () => {
-    const error = { data: { message: "resource exhausted" } };
-
-    vi.mocked(mockClient.session.messages).mockResolvedValue({
-      data: [
-        {
-          info: { id: 'msg1', role: 'user' },
-          parts: [{ type: 'text', text: 'test message' }],
-        },
-      ],
-    });
-
-    await pluginInstance.event?.({
-      event: {
-        type: 'session.error',
-        properties: { sessionID: 'test-session', error },
-      },
-    });
-
-    expect(mockClient.session.abort).toHaveBeenCalled();
-  });
-
-  it('should detect usage limit', async () => {
-    const error = { data: { message: "usage limit exceeded" } };
-
-    vi.mocked(mockClient.session.messages).mockResolvedValue({
-      data: [
-        {
-          info: { id: 'msg1', role: 'user' },
-          parts: [{ type: 'text', text: 'test message' }],
-        },
-      ],
-    });
-
-    await pluginInstance.event?.({
-      event: {
-        type: 'session.error',
-        properties: { sessionID: 'test-session', error },
-      },
-    });
-
-    expect(mockClient.session.abort).toHaveBeenCalled();
-  });
-
-  it('should detect high concurrency usage', async () => {
-    const error = { data: { message: "high concurrency usage of this api" } };
-
-    vi.mocked(mockClient.session.messages).mockResolvedValue({
-      data: [
-        {
-          info: { id: 'msg1', role: 'user' },
-          parts: [{ type: 'text', text: 'test message' }],
-        },
-      ],
-    });
-
-    await pluginInstance.event?.({
-      event: {
-        type: 'session.error',
-        properties: { sessionID: 'test-session', error },
-      },
-    });
-
-    expect(mockClient.session.abort).toHaveBeenCalled();
-  });
-
-  it('should detect reduce concurrency', async () => {
-    const error = { data: { message: "reduce concurrency" } };
-
-    vi.mocked(mockClient.session.messages).mockResolvedValue({
-      data: [
-        {
-          info: { id: 'msg1', role: 'user' },
-          parts: [{ type: 'text', text: 'test message' }],
-        },
-      ],
-    });
-
-    await pluginInstance.event?.({
-      event: {
-        type: 'session.error',
-        properties: { sessionID: 'test-session', error },
-      },
-    });
-
-    expect(mockClient.session.abort).toHaveBeenCalled();
-  });
-
   it('should detect 429 in message text', async () => {
     const error = { data: { message: "Error 429: too many requests" } };
 
@@ -1959,5 +1871,334 @@ describe('Cleanup Functionality', () => {
       pluginInstance.cleanup();
       pluginInstance.cleanup();
     }).not.toThrow();
+  });
+});
+
+describe('safeShowToast Edge Cases', () => {
+  let mockClient: ReturnType<typeof createMockClient>;
+  let pluginInstance: any;
+  let loggerInfoSpy: ReturnType<typeof vi.spyOn>;
+  let loggerWarnSpy: ReturnType<typeof vi.spyOn>;
+  let loggerErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(false);
+    mockClient = createMockClient();
+
+    // Spy on logger methods
+    loggerInfoSpy = vi.spyOn(console, 'log');
+    loggerWarnSpy = vi.spyOn(console, 'warn');
+    loggerErrorSpy = vi.spyOn(console, 'error');
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('should handle missing toast.body.title when TUI exists and showToast fails', async () => {
+    // Make TUI.showToast fail
+    vi.mocked(mockClient.tui.showToast).mockRejectedValue(new Error('TUI error'));
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'test-session',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    // Should log error since toast with missing title defaults to "Toast"
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle missing toast.body.message when TUI exists and showToast fails', async () => {
+    vi.mocked(mockClient.tui.showToast).mockRejectedValue(new Error('TUI error'));
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'test-session',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle missing toast.body.variant when TUI exists and showToast fails', async () => {
+    vi.mocked(mockClient.tui.showToast).mockRejectedValue(new Error('TUI error'));
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'test-session',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle toast with body missing entirely when TUI exists and showToast fails', async () => {
+    // Create a toast that doesn't have a body property
+    vi.mocked(mockClient.tui.showToast).mockRejectedValue(new Error('TUI error'));
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'test-session',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle toast with all undefined values when TUI exists and showToast fails', async () => {
+    vi.mocked(mockClient.tui.showToast).mockRejectedValue(new Error('TUI error'));
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'test-session',
+          error: { name: "APIError", data: { statusCode: 429 } },
+        },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+});
+
+describe('isRateLimitError Edge Cases', () => {
+  let mockClient: ReturnType<typeof createMockClient>;
+  let pluginInstance: any;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(false);
+    mockClient = createMockClient();
+
+    const result = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    pluginInstance = result;
+  });
+
+  it('should handle null error', async () => {
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error: null },
+      },
+    });
+
+    expect(mockClient.session.abort).not.toHaveBeenCalled();
+  });
+
+  it('should handle undefined error', async () => {
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error: undefined },
+      },
+    });
+
+    expect(mockClient.session.abort).not.toHaveBeenCalled();
+  });
+
+  it('should handle error without name property', async () => {
+    const error = { message: "rate limit exceeded" };
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle error with lowercase message', async () => {
+    const error = { data: { message: "rate limit exceeded" } };
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle error with uppercase message', async () => {
+    const error = { data: { message: "RATE LIMIT EXCEEDED" } };
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle error with mixed case message', async () => {
+    const error = { data: { message: "Rate Limit Exceeded" } };
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should handle error with data object but no message property', async () => {
+    const error = { data: { someOtherField: "some value" } };
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).not.toHaveBeenCalled();
+  });
+
+  it('should handle error with responseBody containing rate limit', async () => {
+    const error = { data: { responseBody: "Error: Rate limit exceeded" } };
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 });

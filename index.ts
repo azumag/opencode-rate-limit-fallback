@@ -123,20 +123,6 @@ const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
 
 const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last"];
 
-const RATE_LIMIT_INDICATORS = [
-  "rate limit",
-  "rate_limit",
-  "ratelimit",
-  "too many requests",
-  "quota exceeded",
-  "resource exhausted",
-  "usage limit",
-  "high concurrency usage of this api",
-  "high concurrency",
-  "reduce concurrency",
-  "429",
-] as const;
-
 const DEFAULT_CONFIG: PluginConfig = {
   fallbackModels: DEFAULT_FALLBACK_MODELS,
   cooldownMs: 60 * 1000,
@@ -202,7 +188,7 @@ function isRateLimitError(error: unknown): boolean {
     };
   };
 
-  // Check for 429 status code in APIError
+  // Check for 429 status code in APIError (strict check)
   if (err.name === "APIError" && err.data?.statusCode === 429) {
     return true;
   }
@@ -210,13 +196,26 @@ function isRateLimitError(error: unknown): boolean {
   // Type-safe access to error fields
   const responseBody = String(err.data?.responseBody || "").toLowerCase();
   const message = String(err.data?.message || err.message || "").toLowerCase();
-  const errorName = String(err.name || "").toLowerCase();
 
-  return RATE_LIMIT_INDICATORS.some(
+  // Strict rate limit indicators only - avoid false positives
+  const strictRateLimitIndicators = [
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "too many requests",
+    "quota exceeded",
+  ];
+
+  // Check for 429 in text (explicit HTTP status code)
+  if (responseBody.includes("429") || message.includes("429")) {
+    return true;
+  }
+
+  // Check for strict rate limit keywords
+  return strictRateLimitIndicators.some(
     (indicator) =>
       responseBody.includes(indicator) ||
-      message.includes(indicator) ||
-      errorName.includes(indicator)
+      message.includes(indicator)
   );
 }
 
