@@ -192,6 +192,124 @@ describe('RetryManager', () => {
       expect(delay).toBe(5000);
     });
 
+    it('should calculate polynomial delay', () => {
+      retryManager = new RetryManager({
+        strategy: 'polynomial',
+        baseDelayMs: 1000,
+        maxDelayMs: 10000,
+        polynomialBase: 2,
+        polynomialExponent: 2,
+      }, logger);
+
+      const sessionID = 'session1';
+      const messageID = 'msg1';
+
+      // 0 attempts: 1000 * 2^0 = 1000ms
+      let delay = retryManager.getRetryDelay(sessionID, messageID);
+      expect(delay).toBe(1000);
+
+      retryManager.recordRetry(sessionID, messageID, 'model1', delay);
+
+      // 1 attempt: 1000 * 2^2 = 4000ms
+      delay = retryManager.getRetryDelay(sessionID, messageID);
+      expect(delay).toBe(4000);
+
+      retryManager.recordRetry(sessionID, messageID, 'model2', delay);
+
+      // 2 attempts: 1000 * 2^4 = 16000ms -> capped at 10000ms
+      delay = retryManager.getRetryDelay(sessionID, messageID);
+      expect(delay).toBe(10000);
+    });
+
+    it('should use default polynomial parameters when not specified', () => {
+      retryManager = new RetryManager({
+        strategy: 'polynomial',
+        baseDelayMs: 1000,
+        maxDelayMs: 10000,
+      }, logger);
+
+      const sessionID = 'session1';
+      const messageID = 'msg1';
+
+      // Should use default base=1.5, exponent=2
+      // 0 attempts: 1000 * 1.5^0 = 1000ms
+      let delay = retryManager.getRetryDelay(sessionID, messageID);
+      expect(delay).toBe(1000);
+
+      retryManager.recordRetry(sessionID, messageID, 'model1', delay);
+
+      // 1 attempt: 1000 * 1.5^2 = 2250ms
+      delay = retryManager.getRetryDelay(sessionID, messageID);
+      expect(delay).toBe(2250);
+    });
+
+    it('should use custom strategy function', () => {
+      const customStrategy = (attemptCount: number) => Math.pow(1.5, attemptCount) * 1000;
+      retryManager = new RetryManager({
+        strategy: 'custom',
+        customStrategy,
+      }, logger);
+
+      const sessionID = 'session1';
+      const messageID = 'msg1';
+
+      // 0 attempts: 1.5^0 * 1000 = 1000ms
+      let delay = retryManager.getRetryDelay(sessionID, messageID);
+      expect(delay).toBe(1000);
+
+      retryManager.recordRetry(sessionID, messageID, 'model1', delay);
+
+      // 1 attempt: 1.5^1 * 1000 = 1500ms
+      delay = retryManager.getRetryDelay(sessionID, messageID);
+      expect(delay).toBe(1500);
+    });
+
+    it('should fall back to immediate when custom strategy is missing', () => {
+      retryManager = new RetryManager({
+        strategy: 'custom',
+        // customStrategy not provided
+      }, logger);
+
+      const delay = retryManager.getRetryDelay('session1', 'msg1');
+      expect(delay).toBe(0);
+    });
+
+    it('should clamp custom strategy return value to maxDelayMs', () => {
+      const customStrategy = () => 999999; // Very large delay
+      retryManager = new RetryManager({
+        strategy: 'custom',
+        customStrategy,
+        maxDelayMs: 10000,
+      }, logger);
+
+      const delay = retryManager.getRetryDelay('session1', 'msg1');
+      expect(delay).toBe(10000); // Clamped to maxDelayMs
+    });
+
+    it('should clamp negative custom strategy return value to 0', () => {
+      const customStrategy = () => -1000; // Negative delay
+      retryManager = new RetryManager({
+        strategy: 'custom',
+        customStrategy,
+      }, logger);
+
+      const delay = retryManager.getRetryDelay('session1', 'msg1');
+      expect(delay).toBe(0); // Clamped to 0
+    });
+
+    it('should handle custom strategy function errors gracefully', () => {
+      const customStrategy = () => {
+        throw new Error('Custom strategy error');
+      };
+      retryManager = new RetryManager({
+        strategy: 'custom',
+        customStrategy,
+      }, logger);
+
+      const delay = retryManager.getRetryDelay('session1', 'msg1');
+      expect(delay).toBe(0); // Falls back to immediate on error
+    });
+
     it('should apply jitter when enabled', () => {
       retryManager = new RetryManager({
         strategy: 'exponential',

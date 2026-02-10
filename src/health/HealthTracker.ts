@@ -4,11 +4,11 @@
  */
 
 import { Logger } from '../../logger.js';
-import type { FallbackModel, PluginConfig, ModelHealth } from '../types/index.js';
+import type { FallbackModel, PluginConfig, ModelHealth, HealthTrackerConfig } from '../types/index.js';
 import { getModelKey } from '../utils/helpers.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
+import { dirname } from 'path';
+import { DEFAULT_HEALTH_TRACKER_CONFIG } from '../config/defaults.js';
 
 /**
  * Health tracker state (for persistence)
@@ -19,22 +19,9 @@ interface HealthTrackerState {
 }
 
 /**
- * Default health persistence path
+ * Default health tracker configuration
  */
-const DEFAULT_HEALTH_PERSISTENCE_PATH = join(homedir(), '.opencode', 'rate-limit-fallback-health.json');
-
-/**
- * Minimum requests before health score is considered reliable
- */
-const MIN_REQUESTS_FOR_RELIABLE_SCORE = 3;
-
-/**
- * Default health configuration
- */
-const DEFAULT_HEALTH_CONFIG = {
-  enabled: true,
-  path: DEFAULT_HEALTH_PERSISTENCE_PATH,
-};
+const DEFAULT_HEALTH_CONFIG: HealthTrackerConfig = DEFAULT_HEALTH_TRACKER_CONFIG;
 
 /**
  * Model Health Tracker class
@@ -52,15 +39,18 @@ export class HealthTracker {
   private responseTimeThreshold: number;
   private responseTimePenaltyDivisor: number;
   private failurePenaltyMultiplier: number;
+  private minRequestsForReliableScore: number;
   private persistenceDebounceMs: number;
 
   constructor(config: PluginConfig, logger: Logger) {
     this.healthData = new Map();
 
     // Parse health persistence config
-    const healthPersistence = config.healthPersistence || DEFAULT_HEALTH_CONFIG;
-    this.persistenceEnabled = healthPersistence.enabled !== false;
-    this.persistencePath = healthPersistence.path || DEFAULT_HEALTH_PERSISTENCE_PATH;
+    const healthConfig: HealthTrackerConfig = config.healthPersistence
+      ? { ...DEFAULT_HEALTH_CONFIG, ...config.healthPersistence }
+      : DEFAULT_HEALTH_CONFIG;
+    this.persistenceEnabled = healthConfig.enabled !== false;
+    this.persistencePath = healthConfig.path || DEFAULT_HEALTH_CONFIG.path!;
     this.healthBasedSelectionEnabled = config.enableHealthBasedSelection || false;
 
     // Initialize logger
@@ -69,10 +59,11 @@ export class HealthTracker {
     // Initialize save state
     this.savePending = false;
 
-    // Initialize configurable thresholds (can be customized via config if needed)
-    this.responseTimeThreshold = 2000; // ms - threshold for response time penalty
-    this.responseTimePenaltyDivisor = 200; // divisor for response time penalty calculation
-    this.failurePenaltyMultiplier = 15; // penalty per consecutive failure
+    // Initialize configurable thresholds from config
+    this.responseTimeThreshold = healthConfig.responseTimeThreshold ?? DEFAULT_HEALTH_CONFIG.responseTimeThreshold!;
+    this.responseTimePenaltyDivisor = healthConfig.responseTimePenaltyDivisor ?? DEFAULT_HEALTH_CONFIG.responseTimePenaltyDivisor!;
+    this.failurePenaltyMultiplier = healthConfig.failurePenaltyMultiplier ?? DEFAULT_HEALTH_CONFIG.failurePenaltyMultiplier!;
+    this.minRequestsForReliableScore = healthConfig.minRequestsForReliableScore ?? DEFAULT_HEALTH_CONFIG.minRequestsForReliableScore!;
     this.persistenceDebounceMs = 30000; // 30 seconds debounce for persistence
 
     // Load existing state
@@ -235,7 +226,7 @@ export class HealthTracker {
     let score = 100;
 
     // Penalize based on success rate
-    if (health.totalRequests >= MIN_REQUESTS_FOR_RELIABLE_SCORE) {
+    if (health.totalRequests >= this.minRequestsForReliableScore) {
       const successRate = health.successfulRequests / health.totalRequests;
       score = Math.round(score * successRate);
     }
@@ -381,7 +372,7 @@ export class HealthTracker {
     const avgHealthScore = models.length > 0
       ? Math.round(models.reduce((sum, h) => sum + h.healthScore, 0) / models.length)
       : 100;
-    const modelsWithReliableData = models.filter(h => h.totalRequests >= MIN_REQUESTS_FOR_RELIABLE_SCORE).length;
+    const modelsWithReliableData = models.filter(h => h.totalRequests >= this.minRequestsForReliableScore).length;
 
     return {
       totalTracked: models.length,

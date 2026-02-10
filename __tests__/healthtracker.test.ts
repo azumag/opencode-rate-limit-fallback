@@ -214,6 +214,47 @@ describe('HealthTracker', () => {
       expect(healthiest.length).toBe(3);
     });
 
+    it('should use custom health tracker thresholds', () => {
+      // Clear any existing data
+      tracker.resetAllHealth();
+
+      // Create tracker with custom thresholds
+      const customConfig = {
+        ...testConfig,
+        healthPersistence: {
+          enabled: false, // Disable persistence for this test
+          responseTimeThreshold: 1000, // Lower threshold
+          responseTimePenaltyDivisor: 100, // More aggressive penalty
+          failurePenaltyMultiplier: 20, // Higher failure penalty
+          minRequestsForReliableScore: 5, // More requests for reliability
+        },
+      };
+      tracker.destroy();
+      tracker = new HealthTracker(customConfig, logger);
+
+      // Record success with response time just above threshold
+      tracker.recordSuccess('anthropic', 'model-1', 1500);
+
+      const health = tracker.getModelHealth('anthropic', 'model-1');
+
+      // Should have penalty due to slow response time (1500 > 1000 threshold)
+      // Penalty = (1500 - 1000) / 100 = 5
+      expect(health!.healthScore).toBeLessThan(100);
+    });
+
+    it('should use default thresholds when not specified', () => {
+      // Clear any existing data
+      tracker.resetAllHealth();
+
+      // Record success with response time that would trigger penalty with custom threshold
+      tracker.recordSuccess('anthropic', 'model-1', 1500);
+
+      const health = tracker.getModelHealth('anthropic', 'model-1');
+
+      // Default threshold is 2000ms, so 1500ms should not trigger penalty
+      expect(health!.healthScore).toBe(100);
+    });
+
     it('should limit results when limit is specified', () => {
       tracker.recordSuccess('anthropic', 'model-1', 1000);
       tracker.recordSuccess('google', 'model-2', 1000);

@@ -31,20 +31,37 @@ export type FallbackMode = "cycle" | "stop" | "retry-last";
 
 /**
  * Retry strategy type
+ * - "immediate": Retry immediately without delay
+ * - "exponential": Exponential backoff (baseDelayMs * 2^attempt)
+ * - "linear": Linear backoff (baseDelayMs * (attempt + 1))
+ * - "polynomial": Polynomial backoff (polynomialBase ^ polynomialExponent * attempt * baseDelayMs)
+ * - "custom": Use custom function (TypeScript/JS configuration only, not JSON)
  */
-export type RetryStrategy = "immediate" | "exponential" | "linear" | "custom";
+export type RetryStrategy = "immediate" | "exponential" | "linear" | "polynomial" | "custom";
+
+/**
+ * Custom retry strategy function (for TypeScript/JavaScript configuration only)
+ * Note: This only works when configured programmatically in TypeScript/JS, not in JSON files.
+ * For JSON configuration, use named strategies like "polynomial".
+ * @param attemptCount - The current attempt count (0-indexed)
+ * @returns The delay in milliseconds before the next retry
+ */
+export type CustomRetryStrategyFn = (attemptCount: number) => number;
 
 /**
  * Retry policy configuration
  */
 export interface RetryPolicy {
-  maxRetries: number;          // Maximum retry attempts (default: 3)
-  strategy: RetryStrategy;     // Backoff strategy (default: "immediate")
-  baseDelayMs: number;         // Base delay in ms (default: 1000)
-  maxDelayMs: number;          // Maximum delay in ms (default: 30000)
-  jitterEnabled: boolean;      // Add random jitter to avoid thundering herd
-  jitterFactor: number;        // Jitter factor (default: 0.1, 10% variance)
-  timeoutMs?: number;          // Overall timeout for retries (optional)
+  maxRetries: number;                   // Maximum retry attempts (default: 3)
+  strategy: RetryStrategy;              // Backoff strategy (default: "immediate")
+  baseDelayMs: number;                  // Base delay in ms (default: 1000)
+  maxDelayMs: number;                   // Maximum delay in ms (default: 30000)
+  jitterEnabled: boolean;               // Add random jitter to avoid thundering herd
+  jitterFactor: number;                 // Jitter factor (default: 0.1, 10% variance)
+  timeoutMs?: number;                   // Overall timeout for retries (optional)
+  polynomialBase?: number;              // Base for polynomial strategy (default: 1.5)
+  polynomialExponent?: number;          // Exponent for polynomial strategy (default: 2)
+  customStrategy?: CustomRetryStrategyFn; // Custom function for strategy "custom" (TS/JS only, not JSON)
 }
 
 /**
@@ -102,12 +119,22 @@ export interface ConfigValidationOptions {
 }
 
 /**
- * Health persistence configuration
+ * Health tracker configuration
  */
-export interface HealthPersistenceConfig {
+export interface HealthTrackerConfig {
   enabled: boolean;
   path?: string;
+  responseTimeThreshold?: number;      // Threshold for response time penalty (ms, default: 2000)
+  responseTimePenaltyDivisor?: number;  // Divisor for response time penalty (default: 200)
+  failurePenaltyMultiplier?: number;    // Penalty per consecutive failure (default: 15)
+  minRequestsForReliableScore?: number;// Min requests before score is reliable (default: 3)
 }
+
+/**
+ * Health persistence configuration (alias for HealthTrackerConfig)
+ * Use this for backward compatibility.
+ */
+export type HealthPersistenceConfig = HealthTrackerConfig;
 
 /**
  * Health metrics for a model
@@ -457,6 +484,8 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   maxDelayMs: 30000,
   jitterEnabled: false,
   jitterFactor: 0.1,
+  polynomialBase: 1.5,
+  polynomialExponent: 2,
 };
 
 /**
@@ -478,7 +507,7 @@ export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-las
 /**
  * Valid retry strategies
  */
-export const VALID_RETRY_STRATEGIES: RetryStrategy[] = ["immediate", "exponential", "linear", "custom"];
+export const VALID_RETRY_STRATEGIES: RetryStrategy[] = ["immediate", "exponential", "linear", "polynomial", "custom"];
 
 /**
  * Valid reset intervals

@@ -13,44 +13,27 @@ import {
   VALID_RETRY_STRATEGIES,
   DEFAULT_CIRCUIT_BREAKER_CONFIG,
 } from '../types/index.js';
-import { homedir } from "os";
-
-/**
- * Default health persistence path
- */
-const DEFAULT_HEALTH_PERSISTENCE_PATH = join(homedir(), '.opencode', 'rate-limit-fallback-health.json');
+import {
+  DEFAULT_HEALTH_TRACKER_CONFIG,
+  DEFAULT_COOLDOWN_MS,
+  DEFAULT_FALLBACK_MODE,
+  DEFAULT_LOG_CONFIG,
+  DEFAULT_METRICS_CONFIG,
+} from '../config/defaults.js';
 
 /**
  * Default plugin configuration
  */
 export const DEFAULT_CONFIG: PluginConfig = {
   fallbackModels: DEFAULT_FALLBACK_MODELS,
-  cooldownMs: 60 * 1000,
+  cooldownMs: DEFAULT_COOLDOWN_MS,
   enabled: true,
-  fallbackMode: "cycle",
+  fallbackMode: DEFAULT_FALLBACK_MODE,
   retryPolicy: DEFAULT_RETRY_POLICY,
   circuitBreaker: DEFAULT_CIRCUIT_BREAKER_CONFIG,
-  healthPersistence: {
-    enabled: true,
-    path: DEFAULT_HEALTH_PERSISTENCE_PATH,
-    responseTimeThreshold: 2000,
-    responseTimePenaltyDivisor: 200,
-    failurePenaltyMultiplier: 15,
-    minRequestsForReliableScore: 3,
-  },
-  log: {
-    level: "warn",
-    format: "simple",
-    enableTimestamp: true,
-  },
-  metrics: {
-    enabled: false,
-    output: {
-      console: true,
-      format: "pretty",
-    },
-    resetInterval: "daily",
-  },
+  healthPersistence: DEFAULT_HEALTH_TRACKER_CONFIG,
+  log: DEFAULT_LOG_CONFIG,
+  metrics: DEFAULT_METRICS_CONFIG,
 };
 
 /**

@@ -56,17 +56,8 @@ export class CircuitBreaker {
         newState: newStateType,
       });
 
-      // Show toast notification for HALF_OPEN transition (recovery attempt)
-      if (newStateType === 'HALF_OPEN' && this.client) {
-        safeShowToast(this.client, {
-          body: {
-            title: "Circuit Recovery Attempt",
-            message: `Attempting recovery for ${modelKey} after ${this.config.recoveryTimeoutMs}ms`,
-            variant: "info",
-            duration: 3000,
-          },
-        });
-      }
+      // Show toast notification for state transition
+      this.showStateTransitionToast(modelKey, oldStateType, newStateType);
 
       // Record metrics
       if (this.metricsManager) {
@@ -91,24 +82,15 @@ export class CircuitBreaker {
     circuit.onSuccess();
     const newState = circuit.getState().state;
 
-    // Log state transition
+    // Log state transition and show toast
     if (oldState !== newState) {
       this.logger.info(`Circuit breaker state changed for ${modelKey}`, {
         oldState,
         newState,
       });
 
-      // Show toast notification for circuit close
-      if (newState === 'CLOSED' && oldState !== 'CLOSED' && this.client) {
-        safeShowToast(this.client, {
-          body: {
-            title: "Circuit Closed",
-            message: `Circuit breaker closed for ${modelKey} - service recovered`,
-            variant: "success",
-            duration: 3000,
-          },
-        });
-      }
+      // Show toast notification for state transition
+      this.showStateTransitionToast(modelKey, oldState, newState);
 
       // Record metrics
       if (this.metricsManager) {
@@ -138,7 +120,7 @@ export class CircuitBreaker {
     circuit.onFailure();
     const newState = circuit.getState().state;
 
-    // Log state transition
+    // Log state transition and show toast
     if (oldState !== newState) {
       this.logger.warn(`Circuit breaker state changed for ${modelKey}`, {
         oldState,
@@ -146,29 +128,8 @@ export class CircuitBreaker {
         failureCount: circuit.getState().failureCount,
       });
 
-      // Show toast notification for circuit open
-      if (newState === 'OPEN' && this.client) {
-        safeShowToast(this.client, {
-          body: {
-            title: "Circuit Opened",
-            message: `Circuit breaker opened for ${modelKey} after failure threshold`,
-            variant: "warning",
-            duration: 5000,
-          },
-        });
-      }
-
-      // Show toast notification for circuit close
-      if (newState === 'CLOSED' && oldState !== 'CLOSED' && this.client) {
-        safeShowToast(this.client, {
-          body: {
-            title: "Circuit Closed",
-            message: `Circuit breaker closed for ${modelKey} - service recovered`,
-            variant: "success",
-            duration: 3000,
-          },
-        });
-      }
+      // Show toast notification for state transition
+      this.showStateTransitionToast(modelKey, oldState, newState);
 
       // Record metrics
       if (this.metricsManager) {
@@ -195,6 +156,56 @@ export class CircuitBreaker {
       };
     }
     return circuit.getState();
+  }
+
+  /**
+   * Show toast notification for circuit state transition
+   * @private
+   */
+  private showStateTransitionToast(
+    modelKey: string,
+    oldState: CircuitBreakerStateType,
+    newState: CircuitBreakerStateType
+  ): void {
+    if (!this.client) {
+      return;
+    }
+
+    switch (newState) {
+      case 'OPEN':
+        safeShowToast(this.client, {
+          body: {
+            title: "Circuit Opened",
+            message: `Circuit breaker opened for ${modelKey} after failure threshold`,
+            variant: "warning",
+            duration: 5000,
+          },
+        });
+        break;
+      case 'HALF_OPEN':
+        safeShowToast(this.client, {
+          body: {
+            title: "Circuit Recovery Attempt",
+            message: `Attempting recovery for ${modelKey} after ${this.config.recoveryTimeoutMs}ms`,
+            variant: "info",
+            duration: 3000,
+          },
+        });
+        break;
+      case 'CLOSED':
+        // Only show toast for circuit close when transitioning from non-CLOSED state
+        if (oldState !== 'CLOSED') {
+          safeShowToast(this.client, {
+            body: {
+              title: "Circuit Closed",
+              message: `Circuit breaker closed for ${modelKey} - service recovered`,
+              variant: "success",
+              duration: 3000,
+            },
+          });
+        }
+        break;
+    }
   }
 
   /**

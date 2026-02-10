@@ -33,6 +33,10 @@ export class RetryManager {
       this.logger.warn('Invalid strategy, using default', { strategy: this.config.strategy });
       this.config.strategy = DEFAULT_RETRY_POLICY.strategy;
     }
+    if (this.config.strategy === 'custom' && typeof this.config.customStrategy !== 'function') {
+      this.logger.warn('Custom strategy selected but customStrategy is not a function, using immediate');
+      this.config.strategy = 'immediate';
+    }
     if (this.config.maxRetries < 0) {
       this.logger.warn('Invalid maxRetries, using default', { maxRetries: this.config.maxRetries });
       this.config.maxRetries = DEFAULT_RETRY_POLICY.maxRetries;
@@ -52,6 +56,14 @@ export class RetryManager {
     if (this.config.jitterFactor < 0 || this.config.jitterFactor > 1) {
       this.logger.warn('Invalid jitterFactor, using default', { jitterFactor: this.config.jitterFactor });
       this.config.jitterFactor = DEFAULT_RETRY_POLICY.jitterFactor;
+    }
+    if (this.config.polynomialBase !== undefined && this.config.polynomialBase <= 0) {
+      this.logger.warn('Invalid polynomialBase, using default', { polynomialBase: this.config.polynomialBase });
+      this.config.polynomialBase = DEFAULT_RETRY_POLICY.polynomialBase;
+    }
+    if (this.config.polynomialExponent !== undefined && this.config.polynomialExponent <= 0) {
+      this.logger.warn('Invalid polynomialExponent, using default', { polynomialExponent: this.config.polynomialExponent });
+      this.config.polynomialExponent = DEFAULT_RETRY_POLICY.polynomialExponent;
     }
     if (this.config.timeoutMs !== undefined && this.config.timeoutMs < 0) {
       this.logger.warn('Invalid timeoutMs, ignoring', { timeoutMs: this.config.timeoutMs });
@@ -111,6 +123,12 @@ export class RetryManager {
       case "linear":
         delay = this.calculateLinearDelay(attempt.attemptCount);
         break;
+      case "polynomial":
+        delay = this.calculatePolynomialDelay(attempt.attemptCount);
+        break;
+      case "custom":
+        delay = this.calculateCustomDelay(attempt.attemptCount);
+        break;
       case "immediate":
       default:
         delay = 0;
@@ -139,6 +157,51 @@ export class RetryManager {
   private calculateLinearDelay(attemptCount: number): number {
     const linearDelay = this.config.baseDelayMs * (attemptCount + 1);
     return Math.min(linearDelay, this.config.maxDelayMs);
+  }
+
+  /**
+   * Calculate polynomial backoff delay
+   */
+  private calculatePolynomialDelay(attemptCount: number): number {
+    const base = this.config.polynomialBase || 1.5;
+    const exponent = this.config.polynomialExponent || 2;
+    const polynomialDelay = this.config.baseDelayMs * Math.pow(base, attemptCount * exponent);
+    return Math.min(polynomialDelay, this.config.maxDelayMs);
+  }
+
+  /**
+   * Calculate custom backoff delay
+   */
+  private calculateCustomDelay(attemptCount: number): number {
+    if (this.config.customStrategy) {
+      try {
+        const rawDelay = this.config.customStrategy(attemptCount);
+        // Validate and clamp the delay to valid range
+        const clampedDelay = Math.max(0, Math.min(rawDelay, this.config.maxDelayMs));
+
+        // Log warnings if value was clamped
+        if (rawDelay < 0) {
+          this.logger.warn('Custom strategy returned negative delay, clamping to 0', {
+            rawDelay,
+            attemptCount,
+          });
+        } else if (rawDelay > this.config.maxDelayMs) {
+          this.logger.warn('Custom strategy returned delay exceeding maxDelayMs, clamping', {
+            rawDelay,
+            maxDelayMs: this.config.maxDelayMs,
+            attemptCount,
+          });
+        }
+
+        return clampedDelay;
+      } catch (error) {
+        this.logger.error('Custom strategy function threw error, using immediate', { error, attemptCount });
+        return 0;
+      }
+    } else {
+      this.logger.warn('Custom strategy selected but no customStrategy function provided, using immediate');
+      return 0;
+    }
   }
 
   /**
