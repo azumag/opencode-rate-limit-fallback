@@ -10,8 +10,8 @@ import type {
   FallbackTargetMetrics,
   ModelPerformanceMetrics,
 } from '../types/index.js';
-import type { ResetInterval } from './types.js';
-import { RESET_INTERVAL_MS } from './types.js';
+import type { ResetInterval } from '../types/index.js';
+import { RESET_INTERVAL_MS } from '../types/index.js';
 import { getModelKey } from '../utils/helpers.js';
 
 /**
