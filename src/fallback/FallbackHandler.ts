@@ -26,6 +26,7 @@ export class FallbackHandler {
   private retryState: Map<string, { attemptedModels: Set<string>; lastAttemptTime: number }>;
   private fallbackInProgress: Map<string, number>;
   private fallbackMessages: Map<string, { sessionID: string; messageID: string; timestamp: number }>;
+  private sessionLock: Set<string>;
 
   // Metrics manager reference
   private metricsManager: MetricsManager;
@@ -69,6 +70,7 @@ export class FallbackHandler {
     this.retryState = new Map();
     this.fallbackInProgress = new Map();
     this.fallbackMessages = new Map();
+    this.sessionLock = new Set();
 
     // Initialize retry manager
     this.retryManager = new RetryManager(config.retryPolicy || {}, logger);
@@ -189,11 +191,18 @@ export class FallbackHandler {
    * Handle the rate limit fallback process
    */
   async handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string): Promise<void> {
-    try {
+    // Resolve target session before acquiring lock
+    const rootSessionID = this.subagentTracker.getRootSession(sessionID);
+    const targetSessionID = rootSessionID || sessionID;
 
-      // Get root session and hierarchy using subagent tracker
-      const rootSessionID = this.subagentTracker.getRootSession(sessionID);
-      const targetSessionID = rootSessionID || sessionID;
+    // Session-level lock: prevent concurrent fallback processing
+    if (this.sessionLock.has(targetSessionID)) {
+      this.logger.debug(`Fallback already in progress for session ${targetSessionID}, skipping`);
+      return;
+    }
+    this.sessionLock.add(targetSessionID);
+
+    try {
       const hierarchy = this.subagentTracker.getHierarchy(sessionID);
 
       // If no model info provided, try to get from tracked session model
@@ -382,9 +391,9 @@ export class FallbackHandler {
       });
 
       // Record retry failure on error
-      const rootSessionID = this.subagentTracker.getRootSession(sessionID);
-      const targetSessionID = rootSessionID || sessionID;
       this.retryManager.recordFailure(targetSessionID);
+    } finally {
+      this.sessionLock.delete(targetSessionID);
     }
   }
 
@@ -505,6 +514,7 @@ export class FallbackHandler {
     this.retryState.clear();
     this.fallbackInProgress.clear();
     this.fallbackMessages.clear();
+    this.sessionLock.clear();
     this.retryManager.destroy();
 
     // Destroy circuit breaker

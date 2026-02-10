@@ -23,6 +23,7 @@ describe('DiagnosticReporter', () => {
       fallbackMode: 'cycle',
       enableHealthBasedSelection: true,
       verbose: true,
+      healthPersistence: { enabled: false },
     };
   });
 
