@@ -16,6 +16,15 @@ vi.mock('fs', () => ({
 // Mock path module
 vi.mock('path', () => ({
     join: vi.fn((...args: string[]) => args.join('/')),
+    resolve: vi.fn((...args: string[]) => args.join('/')),
+    normalize: vi.fn((path: string) => path),
+    relative: vi.fn((from: string, to: string) => {
+        // Simple mock for relative: if to starts with from, return the suffix
+        if (to.startsWith(from)) {
+            return to.slice(from.length).replace(/^\//, '');
+        }
+        return '..' + to;
+    }),
 }));
 
 // Helper to mock config with fallback models

@@ -3,7 +3,7 @@
  */
 
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, resolve, normalize, relative } from "path";
 import type { PluginConfig } from '../types/index.js';
 import type { Logger } from '../../logger.js';
 import {
@@ -38,6 +38,36 @@ export const DEFAULT_CONFIG: PluginConfig = {
   metrics: DEFAULT_METRICS_CONFIG,
   configReload: DEFAULT_CONFIG_RELOAD_CONFIG,
 };
+
+/**
+ * Validate that a path does not contain directory traversal attempts
+ */
+function validatePathSafety(path: string, allowedDirs: string[]): boolean {
+  try {
+    const resolvedPath = resolve(path);
+    const normalizedPath = normalize(path);
+
+    // Check for obvious path traversal patterns
+    if (normalizedPath.includes('..')) {
+      return false;
+    }
+
+    // Check that resolved path is within allowed directories
+    for (const allowedDir of allowedDirs) {
+      const resolvedAllowedDir = resolve(allowedDir);
+      const relativePath = relative(resolvedAllowedDir, resolvedPath);
+
+      // If relative path does not start with '..', the path is within the allowed directory
+      if (!relativePath.startsWith('..')) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Result of config loading, includes which file was loaded
@@ -101,19 +131,19 @@ export function loadConfig(directory: string, worktree?: string, logger?: Logger
   // Build search paths: worktree first, then directory, then home locations
   const searchDirs: string[] = [];
   if (worktree) {
-    searchDirs.push(worktree);
+    searchDirs.push(resolve(worktree));
   }
   if (!worktree || worktree !== directory) {
-    searchDirs.push(directory);
+    searchDirs.push(resolve(directory));
   }
+  searchDirs.push(resolve(homedir));
+  searchDirs.push(resolve(xdgConfigHome));
 
   const configPaths: string[] = [];
   for (const dir of searchDirs) {
     configPaths.push(join(dir, ".opencode", "rate-limit-fallback.json"));
     configPaths.push(join(dir, "rate-limit-fallback.json"));
   }
-  configPaths.push(join(homedir, ".opencode", "rate-limit-fallback.json"));
-  configPaths.push(join(xdgConfigHome, "opencode", "rate-limit-fallback.json"));
 
   // Log search paths for debugging
   if (logger) {
@@ -126,6 +156,14 @@ export function loadConfig(directory: string, worktree?: string, logger?: Logger
 
   for (const configPath of configPaths) {
     if (existsSync(configPath)) {
+      // Validate path safety before reading
+      if (!validatePathSafety(configPath, searchDirs)) {
+        if (logger) {
+          logger.warn(`Config file rejected due to path validation: ${configPath}`);
+        }
+        continue;
+      }
+
       try {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content) as Partial<PluginConfig>;

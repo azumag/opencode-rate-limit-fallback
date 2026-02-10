@@ -336,7 +336,11 @@ describe('ConfigReloader', () => {
         mockValidator,
         mockClient,
         mockComponents,
-        testDir
+        testDir,
+        undefined,
+        true,
+        0, // No rate limiting for this test
+        100 // Allow many attempts per minute
       );
 
       await reloader.reloadConfig();
@@ -357,7 +361,11 @@ describe('ConfigReloader', () => {
         mockValidator,
         mockClient,
         mockComponents,
-        testDir
+        testDir,
+        undefined,
+        true,
+        0, // No rate limiting for this test
+        100 // Allow many attempts per minute
       );
 
       // First reload succeeds
@@ -464,6 +472,93 @@ describe('ConfigReloader', () => {
 
       const currentConfig = reloader.getCurrentConfig();
       expect(currentConfig).toEqual(config);
+    });
+  });
+
+  describe('Rate Limiting', () => {
+    it('should enforce minimum reload interval', async () => {
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        mockValidator,
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        true,
+        1000, // 1 second minimum interval
+        100 // Allow many attempts per minute
+      );
+
+      // First reload should succeed
+      const result1 = await reloader.reloadConfig();
+      expect(result1.success).toBe(true);
+
+      // Immediate second reload should be blocked
+      const result2 = await reloader.reloadConfig();
+      expect(result2.success).toBe(false);
+      expect(result2.error).toContain('Too soon');
+
+      // Wait for cooldown
+      await new Promise(resolve => setTimeout(resolve, 1100));
+
+      // Third reload should succeed after cooldown
+      const result3 = await reloader.reloadConfig();
+      expect(result3.success).toBe(true);
+    });
+
+    it('should enforce maximum reloads per minute', async () => {
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        mockValidator,
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        true,
+        0, // No minimum interval
+        3 // Maximum 3 attempts per minute
+      );
+
+      // First 3 reloads should succeed
+      for (let i = 0; i < 3; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10)); // Small delay to avoid rate limit
+        const result = await reloader.reloadConfig();
+        expect(result.success).toBe(true);
+      }
+
+      // 4th reload should be blocked
+      const result4 = await reloader.reloadConfig();
+      expect(result4.success).toBe(false);
+      expect(result4.error).toContain('Rate limit exceeded');
+    });
+
+    it('should track reload attempts for rate limiting', async () => {
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        mockValidator,
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        true,
+        0, // No minimum interval
+        3 // Maximum 3 attempts per minute
+      );
+
+      // Perform reloads
+      for (let i = 0; i < 3; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+        await reloader.reloadConfig();
+      }
+
+      const metrics = reloader.getReloadMetrics();
+      expect(metrics.successfulReloads).toBe(3);
     });
   });
 });

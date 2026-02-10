@@ -34,6 +34,10 @@ export class ConfigReloader {
   private worktree?: string;
   private notifyOnReload: boolean;
   private reloadMetrics: ReloadMetrics;
+  // Rate limiting for reload operations
+  private minReloadIntervalMs: number;
+  private recentReloadAttempts: number[];
+  private maxReloadAttemptsPerMinute: number;
 
   constructor(
     config: PluginConfig,
@@ -44,7 +48,9 @@ export class ConfigReloader {
     components: ComponentRefs,
     directory: string,
     worktree?: string,
-    notifyOnReload: boolean = true
+    notifyOnReload: boolean = true,
+    minReloadIntervalMs: number = 1000,
+    maxReloadAttemptsPerMinute: number = 10
   ) {
     this.config = config;
     this.configPath = configPath;
@@ -60,6 +66,10 @@ export class ConfigReloader {
       successfulReloads: 0,
       failedReloads: 0,
     };
+    // Rate limiting settings
+    this.minReloadIntervalMs = minReloadIntervalMs;
+    this.maxReloadAttemptsPerMinute = maxReloadAttemptsPerMinute;
+    this.recentReloadAttempts = [];
   }
 
   /**
@@ -71,9 +81,18 @@ export class ConfigReloader {
       timestamp: Date.now(),
     };
 
+    // Rate limiting check
+    const rateLimitCheck = this.checkRateLimit();
+    if (!rateLimitCheck.allowed) {
+      result.error = rateLimitCheck.reason || 'Rate limit exceeded';
+      this.logger.warn(`Config reload blocked: ${result.error}`);
+      return result;
+    }
+
     // Track reload metrics
     this.reloadMetrics.totalReloads++;
     this.reloadMetrics.lastReloadTime = result.timestamp;
+    this.recentReloadAttempts.push(result.timestamp);
 
     if (!this.configPath) {
       result.error = 'No config file path available';
@@ -228,6 +247,41 @@ export class ConfigReloader {
    */
   getReloadMetrics(): ReloadMetrics {
     return { ...this.reloadMetrics };
+  }
+
+  /**
+   * Check if reload is allowed based on rate limiting
+   */
+  private checkRateLimit(): { allowed: boolean; reason?: string } {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+
+    // Clean up old reload attempts
+    this.recentReloadAttempts = this.recentReloadAttempts.filter(
+      timestamp => timestamp > oneMinuteAgo
+    );
+
+    // Check minimum interval between reloads
+    if (this.reloadMetrics.lastReloadTime) {
+      const timeSinceLastReload = now - this.reloadMetrics.lastReloadTime;
+      if (timeSinceLastReload < this.minReloadIntervalMs) {
+        const waitTime = this.minReloadIntervalMs - timeSinceLastReload;
+        return {
+          allowed: false,
+          reason: `Too soon. Wait ${waitTime}ms before reloading`,
+        };
+      }
+    }
+
+    // Check maximum attempts per minute
+    if (this.recentReloadAttempts.length >= this.maxReloadAttemptsPerMinute) {
+      return {
+        allowed: false,
+        reason: `Rate limit exceeded. Maximum ${this.maxReloadAttemptsPerMinute} reloads per minute`,
+      };
+    }
+
+    return { allowed: true };
   }
 
   /**
