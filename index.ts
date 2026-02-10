@@ -22,6 +22,8 @@ import { ConfigValidator } from "./src/config/Validator.js";
 import { ErrorPatternRegistry } from "./src/errors/PatternRegistry.js";
 import { HealthTracker } from "./src/health/HealthTracker.js";
 import { DiagnosticReporter } from "./src/diagnostics/Reporter.js";
+import { ConfigWatcher } from "./src/config/Watcher.js";
+import { ConfigReloader, type ComponentRefs } from "./src/main/ConfigReloader.js";
 
 // ============================================================================
 // Helper Functions
@@ -226,6 +228,46 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
 
   const fallbackHandler = new FallbackHandler(config, client, logger, metricsManager, subagentTracker, healthTracker);
 
+  // Initialize config reloader if hot reload is enabled
+  let configWatcher: ConfigWatcher | undefined;
+  if (config.configReload?.enabled) {
+    const componentRefs: ComponentRefs = {
+      fallbackHandler,
+      metricsManager,
+    };
+
+    const configReloader = new ConfigReloader(
+      config,
+      configSource,
+      logger,
+      validator,
+      client,
+      componentRefs,
+      directory,
+      worktree,
+      config.configReload?.notifyOnReload ?? true
+    );
+
+    configWatcher = new ConfigWatcher(
+      configSource || '',
+      logger,
+      async () => { await configReloader.reloadConfig(); },
+      {
+        enabled: config.configReload.enabled,
+        watchFile: config.configReload.watchFile,
+        debounceMs: config.configReload.debounceMs,
+      }
+    );
+
+    configWatcher.start();
+
+    logger.info('Config hot reload enabled', {
+      configPath: configSource || 'none',
+      debounceMs: config.configReload.debounceMs,
+      notifyOnReload: config.configReload.notifyOnReload,
+    });
+  }
+
   // Cleanup stale entries periodically
   const cleanupInterval = setInterval(() => {
     subagentTracker.cleanupStaleEntries();
@@ -296,6 +338,9 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       fallbackHandler.destroy();
       if (healthTracker) {
         healthTracker.destroy();
+      }
+      if (configWatcher) {
+        configWatcher.stop();
       }
     },
   };

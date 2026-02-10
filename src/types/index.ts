@@ -173,6 +173,36 @@ export interface ErrorPatternsConfig {
 }
 
 /**
+ * Configuration hot reload settings
+ */
+export interface ConfigReloadConfig {
+  enabled: boolean;
+  watchFile: boolean;
+  debounceMs: number;
+  notifyOnReload: boolean;
+}
+
+/**
+ * Result of a configuration reload operation
+ */
+export interface ReloadResult {
+  success: boolean;
+  error?: string;
+  timestamp: number;
+}
+
+/**
+ * Metrics for configuration reload operations
+ */
+export interface ReloadMetrics {
+  totalReloads: number;
+  successfulReloads: number;
+  failedReloads: number;
+  lastReloadTime?: number;
+  lastReloadSuccess?: boolean;
+}
+
+/**
  * Plugin configuration
  */
 export interface PluginConfig {
@@ -191,6 +221,7 @@ export interface PluginConfig {
   healthPersistence?: HealthPersistenceConfig;
   verbose?: boolean;
   errorPatterns?: ErrorPatternsConfig;
+  configReload?: ConfigReloadConfig;
 }
 
 // ============================================================================

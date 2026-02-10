@@ -10,6 +10,7 @@ import type {
   FallbackTargetMetrics,
   ModelPerformanceMetrics,
   CircuitBreakerStateType,
+  PluginConfig,
 } from '../types/index.js';
 import type { ResetInterval } from '../types/index.js';
 import { RESET_INTERVAL_MS } from '../types/index.js';
@@ -684,6 +685,37 @@ export class MetricsManager {
       clearInterval(this.resetTimer);
       this.resetTimer = null;
     }
+  }
+
+  /**
+   * Update configuration (for hot reload)
+   */
+  updateConfig(newConfig: PluginConfig): void {
+    const oldEnabled = this.config.enabled;
+    const oldResetInterval = this.config.resetInterval;
+
+    this.config = newConfig.metrics || { enabled: false, output: { console: true, format: "pretty" }, resetInterval: "daily" };
+
+    // Restart reset timer if reset interval changed
+    if (oldResetInterval !== this.config.resetInterval && this.config.enabled) {
+      this.startResetTimer();
+    }
+
+    // Enable/disable reset timer based on config.enabled change
+    if (oldEnabled !== this.config.enabled) {
+      if (this.config.enabled) {
+        this.startResetTimer();
+      } else if (this.resetTimer) {
+        clearInterval(this.resetTimer);
+        this.resetTimer = null;
+      }
+    }
+
+    this.logger.debug('MetricsManager configuration updated', {
+      enabled: this.config.enabled,
+      resetInterval: this.config.resetInterval,
+      output: this.config.output,
+    });
   }
 }
 

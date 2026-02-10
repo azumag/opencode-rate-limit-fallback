@@ -525,4 +525,37 @@ export class FallbackHandler {
       this.circuitBreaker.destroy();
     }
   }
+
+  /**
+   * Update configuration (for hot reload)
+   */
+  updateConfig(newConfig: PluginConfig): void {
+    this.config = newConfig;
+
+    // Update model selector
+    this.modelSelector.updateConfig(newConfig);
+
+    // Update retry manager
+    this.retryManager.updateConfig(newConfig.retryPolicy || {});
+
+    // Recreate circuit breaker if configuration changed significantly
+    const oldCircuitBreakerEnabled = this.circuitBreaker !== undefined;
+    if (newConfig.circuitBreaker?.enabled !== oldCircuitBreakerEnabled) {
+      // Destroy existing circuit breaker
+      if (this.circuitBreaker) {
+        this.circuitBreaker.destroy();
+      }
+
+      // Create new circuit breaker if enabled
+      if (newConfig.circuitBreaker?.enabled) {
+        this.circuitBreaker = new CircuitBreaker(newConfig.circuitBreaker, this.logger, this.metricsManager, this.client);
+        this.modelSelector.setCircuitBreaker(this.circuitBreaker);
+      } else {
+        this.circuitBreaker = undefined;
+        this.modelSelector.setCircuitBreaker(undefined);
+      }
+    }
+
+    this.logger.debug('FallbackHandler configuration updated');
+  }
 }

@@ -105,3 +105,17 @@ export const DEFAULT_METRICS_CONFIG = {
   } as const,
   resetInterval: "daily" as const,
 } as const;
+
+// ============================================================================
+// Config Reload Defaults
+// ============================================================================
+
+/**
+ * Default config reload configuration
+ */
+export const DEFAULT_CONFIG_RELOAD_CONFIG = {
+  enabled: false,
+  watchFile: true,
+  debounceMs: 1000,
+  notifyOnReload: true,
+} as const;

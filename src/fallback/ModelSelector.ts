@@ -184,4 +184,18 @@ export class ModelSelector {
       }
     }
   }
+
+  /**
+   * Update configuration (for hot reload)
+   */
+  updateConfig(newConfig: PluginConfig): void {
+    this.config = newConfig;
+  }
+
+  /**
+   * Set circuit breaker (for hot reload)
+   */
+  setCircuitBreaker(circuitBreaker: CircuitBreaker | undefined): void {
+    this.circuitBreaker = circuitBreaker;
+  }
 }
