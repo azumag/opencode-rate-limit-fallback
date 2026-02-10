@@ -24,6 +24,7 @@ const createHeadlessClient = () => ({
         abort: vi.fn().mockResolvedValue(undefined),
         messages: vi.fn(),
         prompt: vi.fn().mockResolvedValue(undefined),
+        promptAsync: vi.fn().mockResolvedValue(undefined),
     },
     // tui is undefined in headless mode
 });
@@ -34,6 +35,7 @@ const createFailingTuiClient = () => ({
         abort: vi.fn().mockResolvedValue(undefined),
         messages: vi.fn(),
         prompt: vi.fn().mockResolvedValue(undefined),
+        promptAsync: vi.fn().mockResolvedValue(undefined),
     },
     tui: {
         showToast: vi.fn().mockRejectedValue(new Error('TUI error')),
@@ -95,7 +97,7 @@ describe('Headless Mode (No TUI)', () => {
         // Verify fallback logic still executed (abort called)
         expect(mockClient.session.abort).toHaveBeenCalled();
         // Verify prompt called (fallback happened)
-        expect(mockClient.session.prompt).toHaveBeenCalled();
+        expect(mockClient.session.promptAsync).toHaveBeenCalled();
 
         // Verify logs were printed (using console spy because logger writes to console)
         // "Rate Limit Detected" is warning
@@ -315,7 +317,7 @@ describe('TUI Error Handling (Toast Fails)', () => {
         // Verify fallback logic still executed (abort called)
         expect(mockClient.session.abort).toHaveBeenCalled();
         // Verify prompt called (fallback happened)
-        expect(mockClient.session.prompt).toHaveBeenCalled();
+        expect(mockClient.session.promptAsync).toHaveBeenCalled();
         // Verify logs were printed instead of toast
         expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[RateLimitFallback] Rate Limit Detected'));
     });

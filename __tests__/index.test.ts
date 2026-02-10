@@ -26,6 +26,7 @@ const createMockClient = () => ({
     abort: vi.fn().mockResolvedValue(undefined),
     messages: vi.fn(),
     prompt: vi.fn().mockResolvedValue(undefined),
+    promptAsync: vi.fn().mockResolvedValue(undefined),
   },
   tui: {
     showToast: vi.fn().mockResolvedValue(undefined),
@@ -636,9 +637,9 @@ describe('Fallback Modes', () => {
       },
     });
 
-    expect(mockClient.session.prompt).toHaveBeenCalled();
+    expect(mockClient.session.promptAsync).toHaveBeenCalled();
     // Verify that file part uses default mime type when mediaType is falsy
-    const promptCall = vi.mocked(mockClient.session.prompt).mock.calls[0];
+    const promptCall = vi.mocked(mockClient.session.promptAsync).mock.calls[0];
     const parts = promptCall[0].body.parts;
     const filePart = parts.find((p: any) => p.type === 'file');
     expect(filePart?.mime).toBe('application/octet-stream');
@@ -660,7 +661,7 @@ describe('Fallback Modes', () => {
     });
 
     // Should not call prompt due to error
-    expect(mockClient.session.prompt).not.toHaveBeenCalled();
+    expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
   });
 });
 
@@ -706,7 +707,7 @@ describe('State Management', () => {
     });
 
     expect(mockClient.session.abort).toHaveBeenCalled();
-    expect(mockClient.session.prompt).toHaveBeenCalled();
+    expect(mockClient.session.promptAsync).toHaveBeenCalled();
   });
 });
 
@@ -1001,7 +1002,7 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
     });
 
     // Should not call prompt since no valid parts
-    expect(mockClient.session.prompt).not.toHaveBeenCalled();
+    expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
   });
 
   it('should handle errors during fallback and clean up state', async () => {
@@ -1283,7 +1284,7 @@ describe('Subagent Support', () => {
 
     // Fallback should be triggered on root session
     expect(mockClient.session.abort).toHaveBeenCalled();
-    expect(mockClient.session.prompt).toHaveBeenCalled();
+    expect(mockClient.session.promptAsync).toHaveBeenCalled();
   });
 
   it('should enforce maxSubagentDepth', async () => {
@@ -2270,7 +2271,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
 
     // Reset mocks for second fallback
     vi.mocked(mockClient.session.abort).mockClear();
-    vi.mocked(mockClient.session.prompt).mockClear();
+    vi.mocked(mockClient.session.promptAsync).mockClear();
 
     // Second fallback on message 2 (same session, different message)
     vi.mocked(mockClient.session.messages).mockResolvedValue({
@@ -2326,7 +2327,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
 
     // Reset mocks
     vi.mocked(mockClient.session.abort).mockClear();
-    vi.mocked(mockClient.session.prompt).mockClear();
+    vi.mocked(mockClient.session.promptAsync).mockClear();
     vi.mocked(mockClient.session.messages).mockResolvedValue({
       data: [
         {
@@ -2380,7 +2381,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
 
     // Reset mocks for next fallback
     vi.mocked(mockClient.session.abort).mockClear();
-    vi.mocked(mockClient.session.prompt).mockClear();
+    vi.mocked(mockClient.session.promptAsync).mockClear();
     vi.mocked(mockClient.session.messages).mockClear();
     vi.mocked(mockClient.session.messages).mockResolvedValue({
       data: [

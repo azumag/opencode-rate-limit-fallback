@@ -447,6 +447,7 @@ export type OpenCodeClient = {
     abort: (args: { path: { id: string } }) => Promise<unknown>;
     messages: (args: { path: { id: string } }) => Promise<{ data?: Array<{ info: { id: string; role: string }; parts: unknown[] }> }>;
     prompt: (args: { path: { id: string }; body: { parts: SDKMessagePartInput[]; model: { providerID: string; modelID: string } } }) => Promise<unknown>;
+    promptAsync: (args: { path: { id: string }; body: { parts: SDKMessagePartInput[]; model: { providerID: string; modelID: string } } }) => Promise<unknown>;
   };
   tui?: {
     showToast: (toast: ToastMessage) => Promise<unknown>;

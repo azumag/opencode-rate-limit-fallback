@@ -125,7 +125,9 @@ export class FallbackHandler {
   }
 
   /**
-   * Retry the prompt with a different model
+   * Queue the prompt asynchronously (non-blocking), then abort the retry loop.
+   * promptAsync FIRST queues pending work so the server doesn't dispose on idle.
+   * abort SECOND cancels the retry loop; the server sees the queued prompt and processes it.
    */
   async retryWithModel(
     targetSessionID: string,
@@ -169,13 +171,17 @@ export class FallbackHandler {
     // Convert internal MessagePart to SDK-compatible format
     const sdkParts = convertPartsToSDKFormat(parts);
 
-    await this.client.session.prompt({
+    // 1. promptAsync: queue the new prompt (returns immediately, non-blocking)
+    await this.client.session.promptAsync({
       path: { id: targetSessionID },
       body: {
         parts: sdkParts,
         model: { providerID: model.providerID, modelID: model.modelID },
       },
     });
+
+    // 2. abort: cancel the retry loop; server sees queued prompt and processes it
+    await this.abortSession(targetSessionID);
 
     await safeShowToast(this.client, {
       body: {
@@ -223,9 +229,6 @@ export class FallbackHandler {
       if (this.healthTracker && currentProviderID && currentModelID) {
         this.healthTracker.recordFailure(currentProviderID, currentModelID);
       }
-
-      // Abort current session with error handling
-      await this.abortSession(targetSessionID);
 
       await safeShowToast(this.client, {
         body: {
