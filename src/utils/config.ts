@@ -13,6 +13,12 @@ import {
   VALID_RETRY_STRATEGIES,
   DEFAULT_CIRCUIT_BREAKER_CONFIG,
 } from '../types/index.js';
+import { homedir } from "os";
+
+/**
+ * Default health persistence path
+ */
+const DEFAULT_HEALTH_PERSISTENCE_PATH = join(homedir(), '.opencode', 'rate-limit-fallback-health.json');
 
 /**
  * Default plugin configuration
@@ -24,6 +30,14 @@ export const DEFAULT_CONFIG: PluginConfig = {
   fallbackMode: "cycle",
   retryPolicy: DEFAULT_RETRY_POLICY,
   circuitBreaker: DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  healthPersistence: {
+    enabled: true,
+    path: DEFAULT_HEALTH_PERSISTENCE_PATH,
+    responseTimeThreshold: 2000,
+    responseTimePenaltyDivisor: 200,
+    failurePenaltyMultiplier: 15,
+    minRequestsForReliableScore: 3,
+  },
   log: {
     level: "warn",
     format: "simple",
@@ -69,6 +83,10 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
       ...DEFAULT_CONFIG.circuitBreaker!,
       ...config.circuitBreaker,
     } : DEFAULT_CONFIG.circuitBreaker!,
+    healthPersistence: config.healthPersistence ? {
+      ...DEFAULT_CONFIG.healthPersistence!,
+      ...config.healthPersistence,
+    } : DEFAULT_CONFIG.healthPersistence!,
     log: config.log ? { ...DEFAULT_CONFIG.log, ...config.log } : DEFAULT_CONFIG.log,
     metrics: config.metrics ? {
       ...DEFAULT_CONFIG.metrics!,
@@ -106,26 +124,17 @@ export function loadConfig(directory: string, worktree?: string): ConfigLoadResu
   configPaths.push(join(homedir, ".opencode", "rate-limit-fallback.json"));
   configPaths.push(join(xdgConfigHome, "opencode", "rate-limit-fallback.json"));
 
-  // Debug: Log all search paths (helpful for headless mode debugging)
-  if (process.env.DEBUG_RATE_LIMIT_FALLBACK) {
-    console.debug("[RateLimitFallback] Searching for config in paths:", configPaths);
-  }
-
   for (const configPath of configPaths) {
     if (existsSync(configPath)) {
       try {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content) as Partial<PluginConfig>;
-        console.log(`[RateLimitFallback] Loaded config from: ${configPath}`);
         return { config: validateConfig(userConfig), source: configPath };
-      } catch (error) {
-        // Log config errors to console immediately before logger is initialized
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[RateLimitFallback] Failed to load config from ${configPath}:`, errorMessage);
+      } catch {
+        // Skip invalid config files silently - caller will log via structured logger
       }
     }
   }
 
-  console.log("[RateLimitFallback] No config file found, using default configuration");
   return { config: DEFAULT_CONFIG, source: null };
 }
