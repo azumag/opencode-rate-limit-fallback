@@ -53,7 +53,12 @@ export class PatternLearner {
       }
 
       // Process and potentially save patterns
-      this.processPatterns();
+      // Fire-and-forget with proper error handling
+      this.processPatterns().catch((error) => {
+        this.logger.error('[PatternLearner] Failed to process patterns', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     } catch (error) {
       this.logger.error('[PatternLearner] Failed to learn from error', {
         error: error instanceof Error ? error.message : String(error),

@@ -350,6 +350,17 @@ export class ErrorPatternRegistry {
   }
 
   /**
+   * Learn a new pattern from an error (async version)
+   */
+  async addLearnedPatternAsync(error: unknown): Promise<void> {
+    if (this.patternLearner) {
+      this.patternLearner.learnFromError(error);
+    } else {
+      this.logger.warn('[ErrorPatternRegistry] Pattern learning is not enabled. Patterns must be manually registered via configuration.');
+    }
+  }
+
+  /**
    * Get all learned patterns
    */
   getLearnedPatterns(): LearnedPattern[] {
