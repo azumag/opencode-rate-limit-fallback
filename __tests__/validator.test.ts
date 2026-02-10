@@ -436,12 +436,13 @@ describe('ConfigValidator', () => {
     });
 
     it('should return error for invalid JSON', () => {
-      const { writeFileSync, unlinkSync } = require('fs');
+      const { writeFileSync, unlinkSync, mkdirSync } = require('fs');
       const { join } = require('path');
       const tmpDir = '/tmp/opencode-test-validator';
       const testFile = join(tmpDir, 'invalid.json');
 
       try {
+        mkdirSync(tmpDir, { recursive: true });
         writeFileSync(testFile, '{ invalid json }', 'utf-8');
         const result = validator.validateFile(testFile);
 
