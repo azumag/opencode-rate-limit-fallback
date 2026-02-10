@@ -1,6 +1,6 @@
 {
   "name": "@azumag/opencode-rate-limit-fallback",
-  "version": "1.48.0",
+  "version": "1.49.0",
   "description": "OpenCode plugin that automatically switches to fallback models when rate limited",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

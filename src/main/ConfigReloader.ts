@@ -91,10 +91,10 @@ export class ConfigReloader {
 
       // Validate new config
       const validation = source
-        ? this.validator.validateFile(source, this.config.configValidation)
-        : this.validator.validate(newConfig, this.config.configValidation);
+        ? this.validator.validateFile(source, newConfig.configValidation)
+        : this.validator.validate(newConfig, newConfig.configValidation);
 
-      if (!validation.isValid && this.config.configValidation?.strict) {
+      if (!validation.isValid && newConfig.configValidation?.strict) {
         result.error = `Validation failed: ${validation.errors.map(e => `${e.path}: ${e.message}`).join(', ')}`;
         this.logger.error('Config validation failed in strict mode');
         this.logger.error(`Errors: ${result.error}`);

@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConfigReloader } from '../../src/main/ConfigReloader.js';
 import { ConfigValidator } from '../../src/config/Validator.js';
-import { writeFileSync, unlinkSync, existsSync, mkdtempSync, rmdirSync, readFileSync } from 'fs';
+import { writeFileSync, unlinkSync, existsSync, mkdtempSync, rmdirSync, readFileSync, rmSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { PluginConfig } from '../../src/types/index.js';
@@ -22,7 +22,7 @@ describe('ConfigReloader', () => {
   beforeEach(() => {
     // Create a temporary directory for test config files
     testDir = mkdtempSync(join(tmpdir(), 'config-reloader-test-'));
-    configPath = join(testDir, 'config.json');
+    configPath = join(testDir, 'rate-limit-fallback.json'); // Must be rate-limit-fallback.json for loadConfig to find it
 
     // Create mock logger
     mockLogger = {
@@ -71,12 +71,10 @@ describe('ConfigReloader', () => {
   });
 
   afterEach(() => {
-    // Clean up temporary files and directory
-    if (existsSync(configPath)) {
-      unlinkSync(configPath);
-    }
+    // Clean up temporary files and directory recursively
     if (existsSync(testDir)) {
-      rmdirSync(testDir);
+      // Remove directory recursively
+      rmSync(testDir, { recursive: true, force: true });
     }
   });
 
@@ -168,7 +166,7 @@ describe('ConfigReloader', () => {
     it('should handle missing config path', async () => {
       const reloader = new ConfigReloader(
         config,
-        null,
+        null,  // Test with null config path
         mockLogger,
         mockValidator,
         mockClient,
@@ -187,7 +185,12 @@ describe('ConfigReloader', () => {
     });
 
     it('should handle validation errors in strict mode', async () => {
-      config.configValidation = { strict: true };
+      // Update config file with strict validation mode
+      const strictConfig = {
+        ...config,
+        configValidation: { strict: true },
+      };
+      writeFileSync(configPath, JSON.stringify(strictConfig));
       mockValidator.validateFile.mockReturnValue({
         isValid: false,
         errors: [{ path: 'fallbackModels', message: 'Required' }],
@@ -222,7 +225,12 @@ describe('ConfigReloader', () => {
     });
 
     it('should warn about validation errors in non-strict mode', async () => {
-      config.configValidation = { strict: false };
+      // Update config file with non-strict validation mode
+      const nonStrictConfig = {
+        ...config,
+        configValidation: { strict: false },
+      };
+      writeFileSync(configPath, JSON.stringify(nonStrictConfig));
       mockValidator.validateFile.mockReturnValue({
         isValid: false,
         errors: [{ path: 'fallbackModels', message: 'Required' }],
@@ -243,41 +251,6 @@ describe('ConfigReloader', () => {
       expect(result.success).toBe(true);
       expect(mockLogger.warn).toHaveBeenCalledWith('Config validation found 1 error(s)');
       expect(mockLogger.warn).toHaveBeenCalledWith('  fallbackModels: Required');
-    });
-
-    it('should handle validation errors in strict mode', async () => {
-      config.configValidation = { strict: true };
-      mockValidator.validateFile.mockReturnValue({
-        isValid: false,
-        errors: [{ path: 'fallbackModels', message: 'Required' }],
-      });
-
-      const reloader = new ConfigReloader(
-        config,
-        configPath,
-        mockLogger,
-        mockValidator,
-        mockClient,
-        mockComponents,
-        testDir
-      );
-
-      const result = await reloader.reloadConfig();
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Validation failed');
-      expect(mockLogger.error).toHaveBeenCalledWith('Config validation failed in strict mode');
-      expect(mockClient.tui.showToast).toHaveBeenCalledWith({
-        body: {
-          title: 'Config Reload Failed',
-          message: expect.any(String),
-          variant: 'error',
-          duration: 5000,
-        },
-      });
-
-      const metrics = reloader.getReloadMetrics();
-      expect(metrics.failedReloads).toBe(1);
     });
 
     it('should not show toast when notifyOnReload is false', async () => {
@@ -390,18 +363,25 @@ describe('ConfigReloader', () => {
       // First reload succeeds
       await reloader.reloadConfig();
 
-      // Second reload fails - write invalid config and set strict mode on the reloader's internal config
-      const currentConfig = reloader.getCurrentConfig();
-      currentConfig.configValidation = { strict: true };
-      writeFileSync(configPath, JSON.stringify({ fallbackModels: [] })); // Minimal config to allow parsing
+      // Second reload fails - write invalid config with strict mode to the file
+      const invalidConfig = {
+        ...config,
+        configValidation: { strict: true },
+        fallbackModels: [],
+      };
+      writeFileSync(configPath, JSON.stringify(invalidConfig));
       mockValidator.validateFile.mockReturnValue({
         isValid: false,
         errors: [{ path: 'fallbackModels', message: 'Required' }],
       });
       await reloader.reloadConfig();
 
-      // Third reload succeeds - set non-strict mode and valid config
-      currentConfig.configValidation = { strict: false };
+      // Third reload succeeds - write valid config with non-strict mode to the file
+      const validConfig = {
+        ...config,
+        configValidation: { strict: false },
+      };
+      writeFileSync(configPath, JSON.stringify(validConfig));
       mockValidator.validateFile.mockReturnValue({ isValid: true, errors: [] });
       await reloader.reloadConfig();
 
