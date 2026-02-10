@@ -106,11 +106,17 @@ export function loadConfig(directory: string, worktree?: string): ConfigLoadResu
   configPaths.push(join(homedir, ".opencode", "rate-limit-fallback.json"));
   configPaths.push(join(xdgConfigHome, "opencode", "rate-limit-fallback.json"));
 
+  // Debug: Log all search paths (helpful for headless mode debugging)
+  if (process.env.DEBUG_RATE_LIMIT_FALLBACK) {
+    console.debug("[RateLimitFallback] Searching for config in paths:", configPaths);
+  }
+
   for (const configPath of configPaths) {
     if (existsSync(configPath)) {
       try {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content) as Partial<PluginConfig>;
+        console.log(`[RateLimitFallback] Loaded config from: ${configPath}`);
         return { config: validateConfig(userConfig), source: configPath };
       } catch (error) {
         // Log config errors to console immediately before logger is initialized
@@ -120,5 +126,6 @@ export function loadConfig(directory: string, worktree?: string): ConfigLoadResu
     }
   }
 
+  console.log("[RateLimitFallback] No config file found, using default configuration");
   return { config: DEFAULT_CONFIG, source: null };
 }
