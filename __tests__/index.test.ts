@@ -20,6 +20,18 @@ vi.mock('path', () => ({
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
+// Helper to create mock client with config
+const mockDefaultConfig = () => {
+  vi.mocked(existsSync).mockReturnValue(true);
+  vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+    fallbackModels: [
+      { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+      { providerID: "google", modelID: "gemini-2.5-pro" },
+    ],
+    enabled: true,
+  }));
+};
+
 // Helper to create mock client
 const createMockClient = () => ({
   session: {
@@ -40,7 +52,15 @@ describe('isRateLimitError', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    // Mock config file with fallback models
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      fallbackModels: [
+        { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+        { providerID: "google", modelID: "gemini-2.5-pro" },
+      ],
+      enabled: true,
+    }));
 
     // Create plugin instance to test internal functions
     const result = await RateLimitFallback({
@@ -416,7 +436,7 @@ describe('Fallback Modes', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     const result = await RateLimitFallback({
@@ -434,6 +454,10 @@ describe('Fallback Modes', () => {
   it('should cycle and retry from first model', async () => {
     const mockConfig = {
       fallbackMode: "cycle",
+      fallbackModels: [
+        { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+        { providerID: "google", modelID: "gemini-2.5-pro" },
+      ],
     };
 
     vi.mocked(existsSync).mockReturnValue(true);
@@ -671,7 +695,7 @@ describe('State Management', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     const result = await RateLimitFallback({
@@ -717,7 +741,7 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     const result = await RateLimitFallback({
@@ -1062,7 +1086,7 @@ describe('Subagent Support', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     const result = await RateLimitFallback({
@@ -1290,6 +1314,10 @@ describe('Subagent Support', () => {
   it('should enforce maxSubagentDepth', async () => {
     const mockConfig = {
       maxSubagentDepth: 2,
+      fallbackModels: [
+        { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+        { providerID: "google", modelID: "gemini-2.5-pro" },
+      ],
     };
 
     vi.mocked(existsSync).mockReturnValue(true);
@@ -1402,6 +1430,10 @@ describe('Subagent Support', () => {
 
     const mockConfig = {
       enableSubagentFallback: false,
+      fallbackModels: [
+        { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+        { providerID: "google", modelID: "gemini-2.5-pro" },
+      ],
     };
 
     vi.mocked(existsSync).mockReturnValue(true);
@@ -1514,7 +1546,7 @@ describe('Session Hierarchy Cleanup', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     const result = await RateLimitFallback({
@@ -1734,7 +1766,7 @@ describe('Cleanup Functionality', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     const result = await RateLimitFallback({
@@ -1845,7 +1877,7 @@ describe('safeShowToast Edge Cases', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     // Spy on logger methods
@@ -2222,7 +2254,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    vi.mocked(existsSync).mockReturnValue(false);
+    mockDefaultConfig();
     mockClient = createMockClient();
 
     const result = await RateLimitFallback({

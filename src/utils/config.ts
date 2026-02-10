@@ -141,7 +141,27 @@ export function loadConfig(directory: string, worktree?: string, logger?: Logger
   }
 
   if (logger) {
+    // Log that no config file was found
     logger.info(`No config file found in any of the ${configPaths.length} search paths. Using default configuration.`);
+
+    // Show a warning if default fallback models is empty (which is now the case)
+    if (DEFAULT_CONFIG.fallbackModels.length === 0) {
+      logger.warn('No fallback models configured. The plugin will not be able to fallback when rate limited.');
+      logger.warn('Please create a config file with your fallback models.');
+      logger.warn('Config file locations (in order of priority):');
+      for (const configPath of configPaths) {
+        logger.warn(`  - ${configPath}`);
+      }
+      logger.warn('Example config:');
+      logger.warn(JSON.stringify({
+        fallbackModels: [
+          { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+        ],
+        cooldownMs: 60000,
+        enabled: true,
+        fallbackMode: "cycle",
+      }, null, 2));
+    }
   }
   return { config: DEFAULT_CONFIG, source: null };
 }

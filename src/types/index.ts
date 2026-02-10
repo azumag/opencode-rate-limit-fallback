@@ -468,12 +468,19 @@ export type PluginContext = {
 
 /**
  * Default fallback models
+ *
+ * NOTE: This is intentionally empty to force users to explicitly configure
+ * their fallback models. This prevents unintended model usage (e.g., gemini
+ * when not wanted) and makes configuration errors obvious immediately.
+ *
+ * Users must create a config file in one of these locations:
+ * - <worktree>/.opencode/rate-limit-fallback.json
+ * - <directory>/.opencode/rate-limit-fallback.json
+ * - <directory>/rate-limit-fallback.json
+ * - ~/.opencode/rate-limit-fallback.json
+ * - $XDG_CONFIG_HOME/opencode/rate-limit-fallback.json
  */
-export const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [
-  { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
-  { providerID: "google", modelID: "gemini-2.5-pro" },
-  { providerID: "google", modelID: "gemini-2.5-flash" },
-];
+export const DEFAULT_FALLBACK_MODELS: FallbackModel[] = [];
 
 /**
  * Default retry policy

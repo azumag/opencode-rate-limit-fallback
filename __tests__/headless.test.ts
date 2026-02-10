@@ -18,6 +18,18 @@ vi.mock('path', () => ({
     join: vi.fn((...args: string[]) => args.join('/')),
 }));
 
+// Helper to mock config with fallback models
+const mockDefaultConfig = () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+        fallbackModels: [
+            { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+            { providerID: "google", modelID: "gemini-2.5-pro" },
+        ],
+        enabled: true,
+    }));
+};
+
 // Helper to create mock client WITHOUT TUI (simulating headless mode)
 const createHeadlessClient = () => ({
     session: {
@@ -53,7 +65,7 @@ describe('Headless Mode (No TUI)', () => {
 
     beforeEach(async () => {
         vi.resetAllMocks();
-        vi.mocked(existsSync).mockReturnValue(false);
+        mockDefaultConfig();
         mockClient = createHeadlessClient();
 
         const result = await RateLimitFallback({
@@ -274,7 +286,7 @@ describe('TUI Error Handling (Toast Fails)', () => {
 
     beforeEach(async () => {
         vi.resetAllMocks();
-        vi.mocked(existsSync).mockReturnValue(false);
+        mockDefaultConfig();
         mockClient = createFailingTuiClient();
 
         const result = await RateLimitFallback({
