@@ -137,7 +137,7 @@ export class ErrorPatternRegistry {
     // Common rate limit patterns (provider-agnostic)
     this.register({
       name: 'http-429',
-      patterns: [/\\b429\\b/gi],  // HTTP 429 status code with word boundaries
+      patterns: [/\b429\b/gi],  // HTTP 429 status code with word boundaries
       priority: 100,
     });
 
