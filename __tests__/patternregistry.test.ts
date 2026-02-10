@@ -456,7 +456,7 @@ describe('ErrorPatternRegistry', () => {
       registry.addLearnedPattern({ message: 'new error pattern' });
 
       expect(warnSpy).toHaveBeenCalledWith(
-        '[ErrorPatternRegistry] Automatic pattern learning is not enabled. Patterns must be manually registered via configuration.'
+        '[ErrorPatternRegistry] Pattern learning is not enabled. Patterns must be manually registered via configuration.'
       );
     });
   });

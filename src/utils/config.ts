@@ -22,6 +22,7 @@ import {
   DEFAULT_METRICS_CONFIG,
   DEFAULT_CONFIG_RELOAD_CONFIG,
   DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
+  DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
 } from '../config/defaults.js';
 
 /**
@@ -39,6 +40,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
   metrics: DEFAULT_METRICS_CONFIG,
   configReload: DEFAULT_CONFIG_RELOAD_CONFIG,
   dynamicPrioritization: DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
+  errorPatterns: DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
 };
 
 /**
@@ -124,6 +126,10 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
       ...DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
       ...config.dynamicPrioritization,
     } : DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
+    errorPatterns: config.errorPatterns ? {
+      ...DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
+      ...config.errorPatterns,
+    } : DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
   };
 }
 

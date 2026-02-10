@@ -191,11 +191,47 @@ export interface ErrorPattern {
 }
 
 /**
+ * Pattern candidate extracted from an error
+ */
+export interface PatternCandidate {
+  provider?: string;
+  patterns: (string | RegExp)[];
+  sourceError: string;
+  extractedAt: number;
+}
+
+/**
+ * Learned pattern with metadata
+ */
+export interface LearnedPattern extends ErrorPattern {
+  confidence: number;
+  learnedAt: string;  // ISO 8601 timestamp
+  sampleCount: number;
+  lastUsed?: number; // timestamp
+}
+
+/**
+ * Learning configuration
+ */
+export interface LearningConfig {
+  enabled: boolean;
+  autoApproveThreshold: number;
+  maxLearnedPatterns: number;
+  minErrorFrequency: number;
+  learningWindowMs: number;
+}
+
+/**
  * Error pattern configuration
  */
 export interface ErrorPatternsConfig {
   custom?: ErrorPattern[];
   enableLearning?: boolean;
+  learnedPatterns?: LearnedPattern[];
+  autoApproveThreshold?: number;
+  maxLearnedPatterns?: number;
+  minErrorFrequency?: number;
+  learningWindowMs?: number;
 }
 
 /**

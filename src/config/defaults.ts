@@ -136,3 +136,18 @@ export const DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG = {
   minSamples: 3,
   maxHistorySize: 100,
 } as const;
+
+// ============================================================================
+// Error Pattern Learning Defaults
+// ============================================================================
+
+/**
+ * Default error pattern learning configuration
+ */
+export const DEFAULT_ERROR_PATTERN_LEARNING_CONFIG = {
+  enableLearning: false,
+  autoApproveThreshold: 0.8,
+  maxLearnedPatterns: 20,
+  minErrorFrequency: 3,
+  learningWindowMs: 24 * 60 * 60 * 1000, // 24 hours
+} as const;
