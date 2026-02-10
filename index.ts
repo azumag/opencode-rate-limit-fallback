@@ -233,4 +233,4 @@ export default RateLimitFallback;
 // Re-export types only (no class/function re-exports to avoid plugin loader conflicts)
 export type { PluginConfig, MetricsConfig, FallbackModel, FallbackMode, CircuitBreakerConfig, CircuitBreakerState, CircuitBreakerStateType } from "./src/types/index.js";
 export type { LogConfig, Logger } from "./logger.js";
-export { Logger as LoggerClass } from "./logger.js";
+export type { Logger as LoggerClass } from "./logger.js";
