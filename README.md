@@ -51,10 +51,15 @@ Restart OpenCode to load the plugin.
 
 Create a configuration file at one of these locations:
 
-- `~/.opencode/rate-limit-fallback.json` (recommended)
-- `~/.config/opencode/rate-limit-fallback.json`
-- `<project>/.opencode/rate-limit-fallback.json`
-- `<project>/rate-limit-fallback.json`
+**Config file search order (highest to lowest priority):**
+1. `<worktree>/.opencode/rate-limit-fallback.json`
+2. `<worktree>/rate-limit-fallback.json`
+3. `<project>/.opencode/rate-limit-fallback.json`
+4. `<project>/rate-limit-fallback.json`
+5. `~/.opencode/rate-limit-fallback.json` (recommended for most users)
+6. `~/.config/opencode/rate-limit-fallback.json`
+
+> **Note**: Project-local and worktree configs (1-4) take precedence over global configs (5-6).
 
 ### Example Configuration
 
@@ -99,16 +104,39 @@ Create a configuration file at one of these locations:
 
 ### Configuration Options
 
- | Option | Type | Default | Description |
- |--------|------|---------|-------------|
- | `enabled` | boolean | `true` | Enable/disable the plugin |
- | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
- | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
- | `fallbackModels` | array | See below | List of fallback models in priority order |
- | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
- | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
- | `retryPolicy` | object | See below | Retry policy configuration (see below) |
- | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
+  | Option | Type | Default | Description |
+  |--------|------|---------|-------------|
+  | `enabled` | boolean | `true` | Enable/disable the plugin |
+  | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
+  | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
+  | `fallbackModels` | array | See below | List of fallback models in priority order |
+  | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
+  | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
+  | `retryPolicy` | object | See below | Retry policy configuration (see below) |
+  | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
+
+### Git Worktree Support
+
+When using git worktrees, the plugin searches for config files in the worktree directory first, before the project directory. This allows you to have different fallback configurations for different worktrees.
+
+**Example structure:**
+```
+my-repo/
+  .git/
+  .opencode/rate-limit-fallback.json  (project-level config)
+  my-worktree/  (worktree)
+    .opencode/rate-limit-fallback.json  (worktree-specific, higher priority)
+```
+
+**Config file search order with worktrees (highest to lowest priority):**
+1. `<worktree>/.opencode/rate-limit-fallback.json`
+2. `<worktree>/rate-limit-fallback.json`
+3. `<project>/.opencode/rate-limit-fallback.json`
+4. `<project>/rate-limit-fallback.json`
+5. `~/.opencode/rate-limit-fallback.json`
+6. `~/.config/opencode/rate-limit-fallback.json`
+
+> **Note**: If you're using git worktrees and want different configurations per worktree, create config files in the worktree directories (locations 1-2). Otherwise, a single project-level or global config is sufficient.
 
 ### Fallback Modes
 
@@ -221,13 +249,119 @@ The circuit breaker maintains three states for each model:
 | Production | 5 | 60000 | 1 |
 | High Availability | 10 | 30000 | 2 |
 
- ### Default Fallback Models
+### ⚠️ Important: Configuration Required
 
-If no configuration is provided, the following models are used:
+**As of v1.43.0, this plugin requires explicit configuration.**
 
-1. `anthropic/claude-3-5-sonnet-20250514`
-2. `google/gemini-2.5-pro`
-3. `google/gemini-2.5-flash`
+The default fallback models array is empty, meaning no fallback behavior will occur until you create a configuration file.
+
+**You must create a config file at one of these locations:**
+
+**Config file search order (highest to lowest priority):**
+1. `<worktree>/.opencode/rate-limit-fallback.json`
+2. `<worktree>/rate-limit-fallback.json`
+3. `<project>/.opencode/rate-limit-fallback.json`
+4. `<project>/rate-limit-fallback.json`
+5. `~/.opencode/rate-limit-fallback.json` (recommended for most users)
+6. `~/.config/opencode/rate-limit-fallback.json`
+
+> **Note**: Project-local and worktree configs (1-4) take precedence over global configs (5-6).
+
+**If no config file is found, the plugin will:**
+- Log a warning message
+- Not perform any fallback operations
+- Continue functioning normally with rate-limited models
+
+**Minimum working configuration:**
+```json
+{
+  "fallbackModels": [
+    { "providerID": "anthropic", "modelID": "claude-3-5-sonnet-20250514" }
+  ]
+}
+```
+
+## Migrating from v1.42.x or earlier
+
+### Breaking Change: Empty Default Models
+
+**What changed?**
+- v1.43.0 removed the default fallback models
+- You must now explicitly configure your fallback models
+- The plugin will not work without a configuration file
+
+**Why was this changed?**
+- To prevent unintended model usage (e.g., Gemini when not wanted)
+- To make configuration errors obvious immediately
+- To give users explicit control over which models to use
+
+### How to Migrate
+
+1. **Create a config file** at one of the locations listed above
+2. **Add your desired fallback models** to the `fallbackModels` array
+3. **Restart OpenCode** to load the new configuration
+
+### Example Migration
+
+**Before v1.43.0** (no config needed, used defaults):
+```
+Plugin automatically used Claude and Gemini models as fallbacks
+```
+
+**After v1.43.0** (must create config):
+```json
+{
+  "fallbackModels": [
+    { "providerID": "anthropic", "modelID": "claude-3-5-sonnet-20250514" },
+    { "providerID": "google", "modelID": "gemini-2.5-pro" }
+  ],
+  "enabled": true
+}
+```
+
+## Troubleshooting
+
+### "No fallback models configured" warning
+
+**Problem**: You see a warning about no fallback models configured.
+
+**Solution**: Create a config file with your desired fallback models. See the Configuration section above for details.
+
+### Plugin isn't falling back when rate limited
+
+**Problem**: Rate limits occur but no fallback happens.
+
+**Solutions**:
+1. Check that a config file exists and is valid
+2. Verify that `fallbackModels` is not empty in your config
+3. Check that `enabled: true` is set in your config
+4. Review logs for error messages
+
+### "Config file not found" warning
+
+**Problem**: You see warnings about config file not being found.
+
+**Solution**: Create a config file at one of the recommended locations:
+
+**Config file search order (highest to lowest priority):**
+1. `<worktree>/.opencode/rate-limit-fallback.json`
+2. `<worktree>/rate-limit-fallback.json`
+3. `<project>/.opencode/rate-limit-fallback.json`
+4. `<project>/rate-limit-fallback.json`
+5. `~/.opencode/rate-limit-fallback.json` (recommended for most users)
+6. `~/.config/opencode/rate-limit-fallback.json`
+
+> **Note**: Project-local and worktree configs (1-4) take precedence over global configs (5-6).
+
+### All models exhausted quickly
+
+**Problem**: Fallback models are exhausted in a short time.
+
+**Solutions**:
+1. Add more fallback models to your config
+2. Increase `cooldownMs` to allow models to recover
+3. Consider using `fallbackMode: "cycle"` to reset automatically
+4. Check your API rate limits
 
 ## How It Works
 
