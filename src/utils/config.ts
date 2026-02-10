@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { PluginConfig } from '../types/index.js';
+import type { Logger } from '../../logger.js';
 import {
   DEFAULT_FALLBACK_MODELS,
   VALID_FALLBACK_MODES,
@@ -42,6 +43,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
 export interface ConfigLoadResult {
   config: PluginConfig;
   source: string | null;
+  rawUserConfig?: Partial<PluginConfig>; // Raw user config before merging with defaults (for verbose diff output)
 }
 
 /**
@@ -86,7 +88,7 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
 /**
  * Load and validate config from file paths
  */
-export function loadConfig(directory: string, worktree?: string): ConfigLoadResult {
+export function loadConfig(directory: string, worktree?: string, logger?: Logger): ConfigLoadResult {
   const homedir = process.env.HOME || "";
   const xdgConfigHome = process.env.XDG_CONFIG_HOME || join(homedir, ".config");
 
@@ -107,17 +109,39 @@ export function loadConfig(directory: string, worktree?: string): ConfigLoadResu
   configPaths.push(join(homedir, ".opencode", "rate-limit-fallback.json"));
   configPaths.push(join(xdgConfigHome, "opencode", "rate-limit-fallback.json"));
 
+  // Log search paths for debugging
+  if (logger) {
+    logger.debug(`Searching for config file in ${configPaths.length} locations`);
+    for (const configPath of configPaths) {
+      const exists = existsSync(configPath);
+      logger.debug(`  ${exists ? "✓" : "✗"} ${configPath}`);
+    }
+  }
+
   for (const configPath of configPaths) {
     if (existsSync(configPath)) {
       try {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content) as Partial<PluginConfig>;
-        return { config: validateConfig(userConfig), source: configPath };
-      } catch {
+        if (logger) {
+          logger.info(`Config loaded from: ${configPath}`);
+        }
+        return {
+          config: validateConfig(userConfig),
+          source: configPath,
+          rawUserConfig: userConfig,
+        };
+      } catch (error) {
+        if (logger) {
+          logger.warn(`Failed to parse config file: ${configPath}`, { error: error instanceof Error ? error.message : String(error) });
+        }
         // Skip invalid config files silently - caller will log via structured logger
       }
     }
   }
 
+  if (logger) {
+    logger.info(`No config file found in any of the ${configPaths.length} search paths. Using default configuration.`);
+  }
   return { config: DEFAULT_CONFIG, source: null };
 }

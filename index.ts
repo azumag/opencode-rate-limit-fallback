@@ -24,6 +24,38 @@ import { HealthTracker } from "./src/health/HealthTracker.js";
 import { DiagnosticReporter } from "./src/diagnostics/Reporter.js";
 
 // ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Get the difference between two objects (returns keys with different values)
+ */
+function getObjectDiff<T extends Record<string, unknown>>(obj1: T, obj2: T): string[] {
+  const diffs: string[] = [];
+  const allKeys = new Set([...Object.keys(obj1), ...Object.keys(obj2)]);
+
+  for (const key of allKeys) {
+    const val1 = obj1[key];
+    const val2 = obj2[key];
+
+    if (typeof val1 !== typeof val2) {
+      diffs.push(`${key}: ${val1} → ${val2}`);
+      continue;
+    }
+
+    if (val1 === undefined && val2 !== undefined) {
+      diffs.push(`${key}: undefined → ${JSON.stringify(val2)}`);
+    } else if (val1 !== undefined && val2 === undefined) {
+      diffs.push(`${key}: ${JSON.stringify(val1)} → undefined`);
+    } else if (val1 !== val2) {
+      diffs.push(`${key}: ${JSON.stringify(val1)} → ${JSON.stringify(val2)}`);
+    }
+  }
+
+  return diffs;
+}
+
+// ============================================================================
 // Event Type Guards
 // ============================================================================
 
@@ -73,10 +105,25 @@ function isSubagentSessionCreatedEvent(event: { type: string; properties?: unkno
 // ============================================================================
 
 export const RateLimitFallback: Plugin = async ({ client, directory, worktree }) => {
-  const { config, source: configSource } = loadConfig(directory, worktree);
-
-  // Detect headless mode (no TUI)
+  // Detect headless mode (no TUI) before loading config for logging
   const isHeadless = !client.tui;
+
+  // We need a temporary logger to log config loading process
+  // Use a minimal config initially
+  const tempLogConfig: { level: 'info' | 'warn'; format: 'simple' | 'json'; enableTimestamp: boolean } = {
+    level: isHeadless ? 'info' : 'warn',
+    format: 'simple',
+    enableTimestamp: true,
+  };
+  const tempLogger = createLogger(tempLogConfig, "RateLimitFallback");
+
+  // Log headless mode detection
+  if (isHeadless) {
+    tempLogger.info("Running in headless mode (no TUI detected)");
+  }
+
+  const configLoadResult = loadConfig(directory, worktree, tempLogger);
+  const { config, source: configSource } = configLoadResult;
 
   // Auto-adjust log level for headless mode to ensure visibility
   const logConfig = {
@@ -84,13 +131,40 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
     level: isHeadless ? 'info' : (config.log?.level ?? 'warn'),
   };
 
-  // Create logger instance
+  // Create final logger instance with loaded config
   const logger = createLogger(logConfig, "RateLimitFallback");
 
   if (configSource) {
-    logger.info(`Config loaded from ${configSource}`);
+    logger.info(`Config loaded from: ${configSource}`);
   } else {
     logger.info("No config file found, using defaults");
+  }
+
+  // Log verbose mode status
+  if (config.verbose) {
+    logger.info("Verbose mode enabled - showing diagnostic information");
+  }
+
+  // Log config merge diff in verbose mode
+  if (config.verbose && configSource) {
+    if (configLoadResult.rawUserConfig &&
+        typeof configLoadResult.rawUserConfig === 'object' &&
+        configLoadResult.rawUserConfig !== null &&
+        !Array.isArray(configLoadResult.rawUserConfig) &&
+        Object.keys(configLoadResult.rawUserConfig).length > 0) {
+      logger.info("Configuration merge details:");
+      const diffs = getObjectDiff(
+        configLoadResult.rawUserConfig as Record<string, unknown>,
+        config as unknown as Record<string, unknown>
+      );
+      if (diffs.length > 0) {
+        for (const diff of diffs) {
+          logger.info(`  ${diff}`);
+        }
+      } else {
+        logger.info("  No changes from defaults");
+      }
+    }
   }
 
   // Initialize configuration validator
@@ -142,7 +216,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
 
   // Log startup diagnostics if verbose mode
   if (config.verbose) {
-    logger.debug("Verbose mode enabled - showing diagnostic information");
     diagnostics.logCurrentConfig();
   }
 
