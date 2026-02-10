@@ -94,6 +94,58 @@ export interface MetricsConfig {
 }
 
 /**
+ * Configuration validation options
+ */
+export interface ConfigValidationOptions {
+  strict?: boolean;
+  logWarnings?: boolean;
+}
+
+/**
+ * Health persistence configuration
+ */
+export interface HealthPersistenceConfig {
+  enabled: boolean;
+  path?: string;
+}
+
+/**
+ * Health metrics for a model
+ */
+export interface ModelHealth {
+  modelKey: string;
+  providerID: string;
+  modelID: string;
+  totalRequests: number;
+  successfulRequests: number;
+  failedRequests: number;
+  consecutiveFailures: number;
+  avgResponseTime: number; // milliseconds
+  lastUsed: number; // timestamp
+  lastSuccess: number; // timestamp
+  lastFailure: number; // timestamp
+  healthScore: number; // 0-100
+}
+
+/**
+ * Error pattern definition
+ */
+export interface ErrorPattern {
+  name: string;
+  provider?: string;
+  patterns: (string | RegExp)[];
+  priority: number;
+}
+
+/**
+ * Error pattern configuration
+ */
+export interface ErrorPatternsConfig {
+  custom?: ErrorPattern[];
+  enableLearning?: boolean;
+}
+
+/**
  * Plugin configuration
  */
 export interface PluginConfig {
@@ -107,6 +159,11 @@ export interface PluginConfig {
   circuitBreaker?: CircuitBreakerConfig;
   log?: LogConfig;
   metrics?: MetricsConfig;
+  configValidation?: ConfigValidationOptions;
+  enableHealthBasedSelection?: boolean;
+  healthPersistence?: HealthPersistenceConfig;
+  verbose?: boolean;
+  errorPatterns?: ErrorPatternsConfig;
 }
 
 // ============================================================================

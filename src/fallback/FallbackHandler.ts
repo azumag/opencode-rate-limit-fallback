@@ -11,6 +11,7 @@ import { CircuitBreaker } from '../circuitbreaker/CircuitBreaker.js';
 import { extractMessageParts, convertPartsToSDKFormat, safeShowToast, getStateKey, getModelKey, DEDUP_WINDOW_MS, STATE_TIMEOUT_MS } from '../utils/helpers.js';
 import type { SubagentTracker } from '../session/SubagentTracker.js';
 import { RetryManager } from '../retry/RetryManager.js';
+import type { HealthTracker } from '../health/HealthTracker.js';
 
 /**
  * Fallback Handler class for orchestrating the fallback retry flow
@@ -38,19 +39,30 @@ export class FallbackHandler {
   // Circuit breaker reference
   private circuitBreaker?: CircuitBreaker;
 
-  constructor(config: PluginConfig, client: OpenCodeClient, logger: Logger, metricsManager: MetricsManager, subagentTracker: SubagentTracker) {
+  // Health tracker reference
+  private healthTracker?: HealthTracker;
+
+  constructor(
+    config: PluginConfig,
+    client: OpenCodeClient,
+    logger: Logger,
+    metricsManager: MetricsManager,
+    subagentTracker: SubagentTracker,
+    healthTracker?: HealthTracker
+  ) {
     this.config = config;
     this.client = client;
     this.logger = logger;
     this.metricsManager = metricsManager;
     this.subagentTracker = subagentTracker;
+    this.healthTracker = healthTracker;
 
     // Initialize circuit breaker if enabled
     if (config.circuitBreaker?.enabled) {
       this.circuitBreaker = new CircuitBreaker(config.circuitBreaker, logger, metricsManager, client);
     }
 
-    this.modelSelector = new ModelSelector(config, client, this.circuitBreaker);
+    this.modelSelector = new ModelSelector(config, client, this.circuitBreaker, healthTracker);
 
     this.currentSessionModel = new Map();
     this.modelRequestStartTimes = new Map();
@@ -198,6 +210,11 @@ export class FallbackHandler {
         this.metricsManager.recordRateLimit(currentProviderID, currentModelID);
       }
 
+      // Record health failure for current model (if health tracking is enabled)
+      if (this.healthTracker && currentProviderID && currentModelID) {
+        this.healthTracker.recordFailure(currentProviderID, currentModelID);
+      }
+
       // Abort current session with error handling
       await this.abortSession(targetSessionID);
 
@@ -334,8 +351,17 @@ export class FallbackHandler {
         timestamp: Date.now(),
       });
 
+      // Record retry start time for health tracking
+      const retryStartTime = Date.now();
+
       // Retry with the selected model
       await this.retryWithModel(dedupSessionID, nextModel, parts, hierarchy);
+
+      // Record health success for fallback model
+      if (this.healthTracker) {
+        const responseTime = Date.now() - retryStartTime;
+        this.healthTracker.recordSuccess(nextModel.providerID, nextModel.modelID, responseTime);
+      }
 
       // Record retry success
       this.retryManager.recordSuccess(dedupSessionID, nextModel.modelID);

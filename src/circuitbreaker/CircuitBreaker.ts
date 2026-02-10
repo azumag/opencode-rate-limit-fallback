@@ -231,7 +231,18 @@ export class CircuitBreaker {
   }
 
   /**
-   * Destroy the circuit breaker and clean up resources
+   * Get all circuit states
+   */
+  getAllStates(): { modelKey: string; state: CircuitBreakerState }[] {
+    const result: { modelKey: string; state: CircuitBreakerState }[] = [];
+    for (const [modelKey, circuit] of this.circuits.entries()) {
+      result.push({ modelKey, state: circuit.getState() });
+    }
+    return result;
+  }
+
+  /**
+   * Destroy circuit breaker and clean up resources
    */
   destroy(): void {
     this.circuits.clear();

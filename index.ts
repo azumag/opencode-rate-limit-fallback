@@ -16,9 +16,12 @@ import type {
 import { MetricsManager } from "./src/metrics/MetricsManager.js";
 import { FallbackHandler } from "./src/fallback/FallbackHandler.js";
 import { loadConfig } from "./src/utils/config.js";
-import { isRateLimitError } from "./src/utils/errorDetection.js";
 import { SubagentTracker } from "./src/session/SubagentTracker.js";
 import { CLEANUP_INTERVAL_MS } from "./src/types/index.js";
+import { ConfigValidator } from "./src/config/Validator.js";
+import { ErrorPatternRegistry } from "./src/errors/PatternRegistry.js";
+import { HealthTracker } from "./src/health/HealthTracker.js";
+import { DiagnosticReporter } from "./src/diagnostics/Reporter.js";
 
 // ============================================================================
 // Event Type Guards
@@ -90,8 +93,57 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
     logger.info("No config file found, using defaults");
   }
 
+  // Initialize configuration validator
+  const validator = new ConfigValidator(logger);
+  const validation = configSource
+    ? validator.validateFile(configSource, config.configValidation)
+    : validator.validate(config, config.configValidation);
+
+  if (!validation.isValid && config.configValidation?.strict) {
+    logger.error("Configuration validation failed in strict mode. Plugin will not load.");
+    logger.error(`Errors: ${validation.errors.map(e => `${e.path}: ${e.message}`).join(', ')}`);
+    return {};
+  }
+
+  if (validation.errors.length > 0) {
+    logger.warn(`Configuration validation found ${validation.errors.length} error(s)`);
+  }
+
+  if (validation.warnings.length > 0) {
+    logger.warn(`Configuration validation found ${validation.warnings.length} warning(s)`);
+  }
+
   if (!config.enabled) {
     return {};
+  }
+
+  // Initialize error pattern registry
+  const errorPatternRegistry = new ErrorPatternRegistry(logger);
+  if (config.errorPatterns?.custom) {
+    errorPatternRegistry.registerMany(config.errorPatterns.custom);
+  }
+
+  // Initialize health tracker
+  let healthTracker: HealthTracker | undefined;
+  if (config.enableHealthBasedSelection) {
+    healthTracker = new HealthTracker(config, logger);
+    logger.info("Health-based model selection enabled");
+  }
+
+  // Initialize diagnostic reporter
+  const diagnostics = new DiagnosticReporter(
+    config,
+    configSource || 'default',
+    healthTracker,
+    undefined, // circuitBreaker will be initialized in FallbackHandler
+    errorPatternRegistry,
+    logger,
+  );
+
+  // Log startup diagnostics if verbose mode
+  if (config.verbose) {
+    logger.debug("Verbose mode enabled - showing diagnostic information");
+    diagnostics.logCurrentConfig();
   }
 
   // Initialize components
@@ -99,12 +151,15 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
 
   const metricsManager = new MetricsManager(config.metrics ?? { enabled: false, output: { console: true, format: "pretty" }, resetInterval: "daily" }, logger);
 
-  const fallbackHandler = new FallbackHandler(config, client, logger, metricsManager, subagentTracker);
+  const fallbackHandler = new FallbackHandler(config, client, logger, metricsManager, subagentTracker, healthTracker);
 
   // Cleanup stale entries periodically
   const cleanupInterval = setInterval(() => {
     subagentTracker.cleanupStaleEntries();
     fallbackHandler.cleanupStaleEntries();
+    if (healthTracker) {
+      healthTracker.cleanupOldEntries();
+    }
   }, CLEANUP_INTERVAL_MS);
 
   return {
@@ -112,7 +167,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       // Handle session.error events
       if (isSessionErrorEvent(event)) {
         const { sessionID, error } = event.properties;
-        if (sessionID && error && isRateLimitError(error)) {
+        if (sessionID && error && errorPatternRegistry.isRateLimitError(error)) {
           await fallbackHandler.handleRateLimitFallback(sessionID, "", "");
         }
       }
@@ -120,12 +175,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       // Handle message.updated events
       if (isMessageUpdatedEvent(event)) {
         const info = event.properties.info;
-        if (info?.error && isRateLimitError(info.error)) {
+        if (info?.error && errorPatternRegistry.isRateLimitError(info.error)) {
           await fallbackHandler.handleRateLimitFallback(info.sessionID, info.providerID || "", info.modelID || "");
         } else if (info?.status === "completed" && !info?.error && info?.id) {
           // Record fallback success
           fallbackHandler.handleMessageUpdated(info.sessionID, info.id, false, false);
-        } else if (info?.error && !isRateLimitError(info.error) && info?.id) {
+        } else if (info?.error && !errorPatternRegistry.isRateLimitError(info.error) && info?.id) {
           // Record non-rate-limit error
           fallbackHandler.handleMessageUpdated(info.sessionID, info.id, true, false);
         }
@@ -166,6 +221,9 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       subagentTracker.clearAll();
       metricsManager.destroy();
       fallbackHandler.destroy();
+      if (healthTracker) {
+        healthTracker.destroy();
+      }
     },
   };
 };
@@ -175,3 +233,4 @@ export default RateLimitFallback;
 // Re-export types only (no class/function re-exports to avoid plugin loader conflicts)
 export type { PluginConfig, MetricsConfig, FallbackModel, FallbackMode, CircuitBreakerConfig, CircuitBreakerState, CircuitBreakerStateType } from "./src/types/index.js";
 export type { LogConfig, Logger } from "./logger.js";
+export { Logger as LoggerClass } from "./logger.js";

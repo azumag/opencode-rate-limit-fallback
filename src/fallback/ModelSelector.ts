@@ -4,6 +4,7 @@
 
 import type { FallbackModel, PluginConfig, OpenCodeClient } from '../types/index.js';
 import type { CircuitBreaker } from '../circuitbreaker/index.js';
+import type { HealthTracker } from '../health/HealthTracker.js';
 import { getModelKey } from '../utils/helpers.js';
 import { safeShowToast } from '../utils/helpers.js';
 
@@ -15,11 +16,13 @@ export class ModelSelector {
   private config: PluginConfig;
   private client: OpenCodeClient;
   private circuitBreaker?: CircuitBreaker;
+  private healthTracker?: HealthTracker;
 
-  constructor(config: PluginConfig, client: OpenCodeClient, circuitBreaker?: CircuitBreaker) {
+  constructor(config: PluginConfig, client: OpenCodeClient, circuitBreaker?: CircuitBreaker, healthTracker?: HealthTracker) {
     this.config = config;
     this.client = client;
     this.circuitBreaker = circuitBreaker;
+    this.healthTracker = healthTracker;
     this.rateLimitedModels = new Map();
   }
 
@@ -54,6 +57,22 @@ export class ModelSelector {
 
     // If current model is not in the fallback list (startIndex is -1), start from 0
     const searchStartIndex = Math.max(0, startIndex);
+
+    // Get available models
+    const candidates: FallbackModel[] = [];
+    for (let i = 0; i < this.config.fallbackModels.length; i++) {
+      const model = this.config.fallbackModels[i];
+      const key = getModelKey(model.providerID, model.modelID);
+      if (!attemptedModels.has(key) && !this.isModelRateLimited(model.providerID, model.modelID) && this.isModelAvailable(model.providerID, model.modelID)) {
+        candidates.push(model);
+      }
+    }
+
+    // Sort by health score if health tracker is enabled
+    if (this.healthTracker && this.config.enableHealthBasedSelection) {
+      const healthiest = this.healthTracker.getHealthiestModels(candidates);
+      return healthiest[0] || null;
+    }
 
     // Search forward from current position
     for (let i = searchStartIndex + 1; i < this.config.fallbackModels.length; i++) {
