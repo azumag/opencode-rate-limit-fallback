@@ -22,7 +22,8 @@ OpenCode plugin that automatically switches to fallback models when rate limited
   - Configurable maximum subagent nesting depth
   - **Circuit breaker pattern** to prevent cascading failures from consistently failing models
   - **Metrics collection** to track rate limits, fallbacks, and model performance
-  - **Configuration hot reload** - Reload configuration changes without restarting OpenCode
+   - **Configuration hot reload** - Reload configuration changes without restarting OpenCode
+   - **Dynamic fallback model prioritization** - Automatically reorders models based on success rate, response time, and usage frequency
 
 ## Installation
 
@@ -122,6 +123,95 @@ Create a configuration file at one of these locations:
    | `retryPolicy` | object | See below | Retry policy configuration (see below) |
    | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
    | `configReload` | object | See below | Configuration hot reload settings (see below) |
+   | `dynamicPrioritization` | object | See below | Dynamic prioritization settings (see below) |
+
+### Dynamic Prioritization
+
+The dynamic prioritization feature automatically reorders your fallback models based on their performance metrics, helping you use the most reliable and fastest models first.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable/disable dynamic prioritization |
+| `updateInterval` | number | `10` | Number of requests between score updates (performance optimization) |
+| `successRateWeight` | number | `0.6` | Weight for success rate (0-1) |
+| `responseTimeWeight` | number | `0.3` | Weight for response time (0-1) |
+| `recentUsageWeight` | number | `0.1` | Weight for recent usage frequency (0-1) |
+| `minSamples` | number | `3` | Minimum samples before using dynamic ordering |
+| `maxHistorySize` | number | `100` | Maximum history size for usage tracking |
+
+#### How It Works
+
+Dynamic prioritization calculates a score for each model based on three factors:
+
+1. **Success Rate** (default weight: 0.6)
+   - Based on health score from HealthTracker
+   - Higher success rate = higher score
+
+2. **Response Time** (default weight: 0.3)
+   - Faster response times get higher scores
+   - Thresholds: <500ms (excellent), >5000ms (poor)
+
+3. **Recent Usage** (default weight: 0.1)
+   - Recently used models get a small boost
+   - Decays over 24 hours
+
+The final score is calculated as:
+```
+score = (healthScore / 100 * successRateWeight) +
+        (normalizedResponseTime * responseTimeWeight) +
+        (normalizedRecentUsage * recentUsageWeight)
+```
+
+#### Learning Phase
+
+- Uses static ordering until `minSamples` models have sufficient data
+- Default: 3 models need at least 3 requests each
+- Ensures reliable data before reordering
+
+#### Configuration Examples
+
+**Enable with defaults:**
+```json
+{
+  "dynamicPrioritization": {
+    "enabled": true
+  }
+}
+```
+
+**Full configuration:**
+```json
+{
+  "dynamicPrioritization": {
+    "enabled": true,
+    "updateInterval": 10,
+    "successRateWeight": 0.6,
+    "responseTimeWeight": 0.3,
+    "recentUsageWeight": 0.1,
+    "minSamples": 3,
+    "maxHistorySize": 100
+  }
+}
+```
+
+**Prioritize speed over reliability:**
+```json
+{
+  "dynamicPrioritization": {
+    "enabled": true,
+    "successRateWeight": 0.4,
+    "responseTimeWeight": 0.5,
+    "recentUsageWeight": 0.1
+  }
+}
+```
+
+#### Important Notes
+
+- **Disabled by default**: Set `enabled: true` to activate
+- **Requires health tracking**: Uses HealthTracker data for success rates
+- **Weights must sum to ~1.0**: Ensure optimal scoring behavior
+- **Hot reload supported**: Can be enabled/disabled without restarting OpenCode
 
 ### Git Worktree Support
 
@@ -472,11 +562,12 @@ When OpenCode uses subagents (e.g., for complex tasks requiring specialized agen
 ## Metrics
 
  The plugin includes a metrics collection feature that tracks:
- - Rate limit events per provider/model
- - Fallback statistics (total, successful, failed, average duration)
- - **Retry statistics** (total attempts, successes, failures, average delay)
- - Model performance (requests, successes, failures, response time)
- - **Circuit breaker statistics** (state transitions, open/closed counts)
+  - Rate limit events per provider/model
+  - Fallback statistics (total, successful, failed, average duration)
+  - **Retry statistics** (total attempts, successes, failures, average delay)
+  - Model performance (requests, successes, failures, response time)
+  - **Circuit breaker statistics** (state transitions, open/closed counts)
+  - **Dynamic prioritization statistics** (enabled status, reorder count, models with scores)
 
 ### Metrics Configuration
 
@@ -557,19 +648,25 @@ Model Performance:
      Avg Response: 0.85s
      Success Rate: 90.0%
 
- Circuit Breaker:
- ----------------------------------------
-   anthropic/claude-3-5-sonnet-20250514:
-     State: OPEN
-     Failures: 5
-     Successes: 0
-     State Transitions: 2
-   google/gemini-2.5-pro:
-     State: CLOSED
-     Failures: 2
-     Successes: 8
-     State Transitions: 3
- ```
+  Circuit Breaker:
+  ----------------------------------------
+    anthropic/claude-3-5-sonnet-20250514:
+      State: OPEN
+      Failures: 5
+      Successes: 0
+      State Transitions: 2
+    google/gemini-2.5-pro:
+      State: CLOSED
+      Failures: 2
+      Successes: 8
+      State Transitions: 3
+
+  Dynamic Prioritization:
+  ----------------------------------------
+    Enabled: Yes
+    Reorders: 5
+    Models with dynamic scores: 3
+  ```
 
  **JSON** (machine-readable):
 ```json
@@ -631,12 +728,17 @@ Model Performance:
        "failures": 2,
        "successes": 8,
        "stateTransitions": 3
-     }
-   },
-   "startedAt": 1739148000000,
-   "generatedAt": 1739149800000
- }
- ```
+      }
+    },
+    "dynamicPrioritization": {
+      "enabled": true,
+      "reorders": 5,
+      "modelsWithDynamicScores": 3
+    },
+    "startedAt": 1739148000000,
+    "generatedAt": 1739149800000
+  }
+  ```
 
 **CSV** (spreadsheet-friendly):
 ```
@@ -661,11 +763,15 @@ google/gemini-2.5-pro,7,5,71.4
  model,requests,successes,failures,avg_response_time_ms,success_rate
  google/gemini-2.5-pro,10,9,1,850,90.0
 
- === CIRCUIT_BREAKER ===
- model,current_state,failures,successes,state_transitions
- anthropic/claude-3-5-sonnet-20250514,OPEN,5,0,2
- google/gemini-2.5-pro,CLOSED,2,8,3
- ```
+  === CIRCUIT_BREAKER ===
+  model,current_state,failures,successes,state_transitions
+  anthropic/claude-3-5-sonnet-20250514,OPEN,5,0,2
+  google/gemini-2.5-pro,CLOSED,2,8,3
+
+  === DYNAMIC_PRIORITIZATION ===
+  enabled,reorders,models_with_dynamic_scores
+  Yes,5,3
+  ```
 
 ## License
 
