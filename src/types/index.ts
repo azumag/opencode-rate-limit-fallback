@@ -48,6 +48,34 @@ export interface RetryPolicy {
 }
 
 /**
+ * Circuit breaker state
+ */
+export type CircuitBreakerStateType = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+
+/**
+ * Circuit breaker configuration
+ */
+export interface CircuitBreakerConfig {
+  enabled: boolean;              // Enable/disable circuit breaker (default: false)
+  failureThreshold: number;      // Consecutive failures before opening (default: 5)
+  recoveryTimeoutMs: number;     // Wait time before trying recovery (default: 60000)
+  halfOpenMaxCalls: number;      // Max calls allowed in HALF_OPEN state (default: 1)
+  successThreshold: number;      // Successes needed to close circuit (default: 2)
+}
+
+/**
+ * Circuit breaker state data
+ */
+export interface CircuitBreakerState {
+  state: CircuitBreakerStateType;
+  failureCount: number;
+  successCount: number;
+  lastFailureTime: number;
+  lastSuccessTime: number;
+  nextAttemptTime: number;
+}
+
+/**
  * Metrics output configuration
  */
 export interface MetricsOutputConfig {
@@ -76,6 +104,7 @@ export interface PluginConfig {
   maxSubagentDepth?: number;
   enableSubagentFallback?: boolean;
   retryPolicy?: RetryPolicy;
+  circuitBreaker?: CircuitBreakerConfig;
   log?: LogConfig;
   metrics?: MetricsConfig;
 }
@@ -223,6 +252,19 @@ export interface ModelPerformanceMetrics {
 }
 
 /**
+ * Circuit breaker metrics
+ */
+export interface CircuitBreakerMetrics {
+  stateTransitions: number;
+  opens: number;
+  closes: number;
+  halfOpens: number;
+  currentOpen: number;
+  currentHalfOpen: number;
+  currentClosed: number;
+}
+
+/**
  * Retry metrics
  */
 export interface RetryMetrics {
@@ -247,6 +289,10 @@ export interface MetricsData {
   };
   retries: RetryMetrics;
   modelPerformance: Map<string, ModelPerformanceMetrics>;
+  circuitBreaker: {
+    total: CircuitBreakerMetrics;
+    byModel: Map<string, CircuitBreakerMetrics>;
+  };
   startedAt: number;
   generatedAt: number;
 }
@@ -354,6 +400,17 @@ export const DEFAULT_RETRY_POLICY: RetryPolicy = {
   maxDelayMs: 30000,
   jitterEnabled: false,
   jitterFactor: 0.1,
+};
+
+/**
+ * Default circuit breaker configuration
+ */
+export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = {
+  enabled: false,
+  failureThreshold: 5,
+  recoveryTimeoutMs: 60000,
+  halfOpenMaxCalls: 1,
+  successThreshold: 2,
 };
 
 /**

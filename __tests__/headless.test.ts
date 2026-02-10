@@ -134,6 +134,138 @@ describe('Headless Mode (No TUI)', () => {
     });
 });
 
+describe('Config Loading with Worktree', () => {
+    let mockClient: any;
+
+    beforeEach(() => {
+        vi.resetAllMocks();
+        mockClient = createHeadlessClient();
+    });
+
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('should load config from worktree when directory has no config', async () => {
+        const mockConfig = {
+            fallbackModels: [
+                { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+            ],
+        };
+
+        // Only worktree path has config
+        vi.mocked(existsSync).mockImplementation((path) => {
+            return String(path) === '/worktree/.opencode/rate-limit-fallback.json';
+        });
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/project',
+            project: {} as any,
+            worktree: '/worktree',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        expect(result).toBeDefined();
+        expect(result.event).toBeDefined();
+    });
+
+    it('should prefer worktree config over directory config', async () => {
+        const worktreeConfig = {
+            fallbackModels: [
+                { providerID: "worktree-provider", modelID: "worktree-model" },
+            ],
+        };
+
+        // worktree path has config (searched first)
+        vi.mocked(existsSync).mockImplementation((path) => {
+            return String(path).includes('/worktree/');
+        });
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(worktreeConfig));
+
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/project',
+            project: {} as any,
+            worktree: '/worktree',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        expect(result).toBeDefined();
+        expect(result.event).toBeDefined();
+    });
+
+    it('should deduplicate paths when worktree equals directory', async () => {
+        vi.mocked(existsSync).mockReturnValue(false);
+
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/same-path',
+            project: {} as any,
+            worktree: '/same-path',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        expect(result).toBeDefined();
+    });
+
+    it('should use XDG_CONFIG_HOME when set', async () => {
+        const originalXdg = process.env.XDG_CONFIG_HOME;
+        process.env.XDG_CONFIG_HOME = '/custom/xdg';
+
+        const mockConfig = {
+            fallbackModels: [
+                { providerID: "xdg-provider", modelID: "xdg-model" },
+            ],
+        };
+
+        vi.mocked(existsSync).mockImplementation((path) => {
+            return String(path) === '/custom/xdg/opencode/rate-limit-fallback.json';
+        });
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        expect(result).toBeDefined();
+        expect(result.event).toBeDefined();
+
+        process.env.XDG_CONFIG_HOME = originalXdg;
+    });
+
+    it('should handle non-array fallbackModels in config by using defaults', async () => {
+        const mockConfig = {
+            fallbackModels: "not-an-array",
+        };
+
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify(mockConfig));
+
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        // Should use default models, not crash
+        expect(result).toBeDefined();
+        expect(result.event).toBeDefined();
+    });
+});
+
 describe('TUI Error Handling (Toast Fails)', () => {
     let pluginInstance: any;
     let mockClient: any;

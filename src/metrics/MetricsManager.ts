@@ -9,6 +9,7 @@ import type {
   RateLimitMetrics,
   FallbackTargetMetrics,
   ModelPerformanceMetrics,
+  CircuitBreakerStateType,
 } from '../types/index.js';
 import type { ResetInterval } from '../types/index.js';
 import { RESET_INTERVAL_MS } from '../types/index.js';
@@ -43,6 +44,18 @@ export class MetricsManager {
         byModel: new Map(),
       },
       modelPerformance: new Map(),
+      circuitBreaker: {
+        total: {
+          stateTransitions: 0,
+          opens: 0,
+          closes: 0,
+          halfOpens: 0,
+          currentOpen: 0,
+          currentHalfOpen: 0,
+          currentClosed: 0,
+        },
+        byModel: new Map(),
+      },
       startedAt: Date.now(),
       generatedAt: Date.now(),
     };
@@ -87,6 +100,18 @@ export class MetricsManager {
         byModel: new Map(),
       },
       modelPerformance: new Map(),
+      circuitBreaker: {
+        total: {
+          stateTransitions: 0,
+          opens: 0,
+          closes: 0,
+          halfOpens: 0,
+          currentOpen: 0,
+          currentHalfOpen: 0,
+          currentClosed: 0,
+        },
+        byModel: new Map(),
+      },
       startedAt: Date.now(),
       generatedAt: Date.now(),
     };
@@ -265,6 +290,67 @@ export class MetricsManager {
   }
 
   /**
+   * Record a circuit breaker state transition
+   */
+  recordCircuitBreakerStateTransition(modelKey: string, oldState: CircuitBreakerStateType, newState: CircuitBreakerStateType): void {
+    if (!this.config.enabled) return;
+
+    // Update total metrics
+    this.metrics.circuitBreaker.total.stateTransitions++;
+    this.updateCircuitBreakerStateCounts(this.metrics.circuitBreaker.total, oldState, newState);
+
+    // Update model-specific metrics
+    let modelMetrics = this.metrics.circuitBreaker.byModel.get(modelKey);
+    if (!modelMetrics) {
+      modelMetrics = {
+        stateTransitions: 0,
+        opens: 0,
+        closes: 0,
+        halfOpens: 0,
+        currentOpen: 0,
+        currentHalfOpen: 0,
+        currentClosed: 1, // Start with CLOSED
+      };
+      this.metrics.circuitBreaker.byModel.set(modelKey, modelMetrics);
+    }
+
+    modelMetrics.stateTransitions++;
+    this.updateCircuitBreakerStateCounts(modelMetrics, oldState, newState);
+    this.metrics.circuitBreaker.byModel.set(modelKey, modelMetrics);
+  }
+
+  /**
+   * Helper method to update circuit breaker state counts
+   * @private
+   */
+  private updateCircuitBreakerStateCounts(
+    metrics: { stateTransitions: number; opens: number; closes: number; halfOpens: number; currentOpen: number; currentHalfOpen: number; currentClosed: number },
+    oldState: CircuitBreakerStateType,
+    newState: CircuitBreakerStateType
+  ): void {
+    // Update state counts based on old state
+    if (oldState === 'OPEN') {
+      metrics.currentOpen--;
+    } else if (oldState === 'HALF_OPEN') {
+      metrics.currentHalfOpen--;
+    } else if (oldState === 'CLOSED') {
+      metrics.currentClosed--;
+    }
+
+    // Update state counts based on new state
+    if (newState === 'OPEN') {
+      metrics.opens++;
+      metrics.currentOpen++;
+    } else if (newState === 'HALF_OPEN') {
+      metrics.halfOpens++;
+      metrics.currentHalfOpen++;
+    } else if (newState === 'CLOSED') {
+      metrics.closes++;
+      metrics.currentClosed++;
+    }
+  }
+
+  /**
    * Get a copy of the current metrics
    */
   getMetrics(): MetricsData {
@@ -312,6 +398,12 @@ export class MetricsManager {
       modelPerformance: Object.fromEntries(
         Array.from(metrics.modelPerformance.entries()).map(([k, v]) => [k, v])
       ),
+      circuitBreaker: {
+        ...metrics.circuitBreaker,
+        byModel: Object.fromEntries(
+          Array.from(metrics.circuitBreaker.byModel.entries()).map(([k, v]) => [k, v])
+        ),
+      },
       startedAt: metrics.startedAt,
       generatedAt: metrics.generatedAt,
     };
@@ -388,6 +480,32 @@ export class MetricsManager {
           const successRate = ((data.successes / data.attempts) * 100).toFixed(1);
           lines.push(`      Success Rate: ${successRate}%`);
         }
+      }
+    }
+    lines.push("");
+
+    // Circuit Breaker
+    lines.push("Circuit Breaker:");
+    lines.push("-".repeat(40));
+    lines.push(`  State Transitions: ${this.metrics.circuitBreaker.total.stateTransitions}`);
+    lines.push(`  Opens: ${this.metrics.circuitBreaker.total.opens}`);
+    lines.push(`  Closes: ${this.metrics.circuitBreaker.total.closes}`);
+    lines.push(`  Half Opens: ${this.metrics.circuitBreaker.total.halfOpens}`);
+    lines.push("");
+    lines.push("  Current State Distribution:");
+    lines.push(`    CLOSED: ${this.metrics.circuitBreaker.total.currentClosed}`);
+    lines.push(`    HALF_OPEN: ${this.metrics.circuitBreaker.total.currentHalfOpen}`);
+    lines.push(`    OPEN: ${this.metrics.circuitBreaker.total.currentOpen}`);
+    if (this.metrics.circuitBreaker.byModel.size > 0) {
+      lines.push("");
+      lines.push("  By Model:");
+      for (const [model, data] of this.metrics.circuitBreaker.byModel.entries()) {
+        lines.push(`    ${model}:`);
+        lines.push(`      State Transitions: ${data.stateTransitions}`);
+        lines.push(`      Opens: ${data.opens}`);
+        lines.push(`      Closes: ${data.closes}`);
+        lines.push(`      Half Opens: ${data.halfOpens}`);
+        lines.push(`      Current State: ${data.currentOpen > 0 ? 'OPEN' : data.currentHalfOpen > 0 ? 'HALF_OPEN' : 'CLOSED'}`);
       }
     }
     lines.push("");
@@ -481,6 +599,36 @@ export class MetricsManager {
         data.attempts,
         data.successes,
         successRate,
+      ].join(","));
+    }
+    lines.push("");
+
+    // Circuit Breaker Summary CSV
+    lines.push("=== CIRCUIT_BREAKER_SUMMARY ===");
+    lines.push(`state_transitions,opens,closes,half_opens,current_open,current_half_open,current_closed`);
+    lines.push([
+      this.metrics.circuitBreaker.total.stateTransitions,
+      this.metrics.circuitBreaker.total.opens,
+      this.metrics.circuitBreaker.total.closes,
+      this.metrics.circuitBreaker.total.halfOpens,
+      this.metrics.circuitBreaker.total.currentOpen,
+      this.metrics.circuitBreaker.total.currentHalfOpen,
+      this.metrics.circuitBreaker.total.currentClosed,
+    ].join(","));
+    lines.push("");
+
+    // Circuit Breaker by Model CSV
+    lines.push("=== CIRCUIT_BREAKER_BY_MODEL ===");
+    lines.push("model,state_transitions,opens,closes,half_opens,current_state");
+    for (const [model, data] of this.metrics.circuitBreaker.byModel.entries()) {
+      const currentState = data.currentOpen > 0 ? 'OPEN' : data.currentHalfOpen > 0 ? 'HALF_OPEN' : 'CLOSED';
+      lines.push([
+        model,
+        data.stateTransitions,
+        data.opens,
+        data.closes,
+        data.halfOpens,
+        currentState,
       ].join(","));
     }
     lines.push("");

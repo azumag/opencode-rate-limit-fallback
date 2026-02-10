@@ -3,6 +3,7 @@
  */
 
 import type { FallbackModel, PluginConfig, OpenCodeClient } from '../types/index.js';
+import type { CircuitBreaker } from '../circuitbreaker/index.js';
 import { getModelKey } from '../utils/helpers.js';
 import { safeShowToast } from '../utils/helpers.js';
 
@@ -13,10 +14,12 @@ export class ModelSelector {
   private rateLimitedModels: Map<string, number>;
   private config: PluginConfig;
   private client: OpenCodeClient;
+  private circuitBreaker?: CircuitBreaker;
 
-  constructor(config: PluginConfig, client: OpenCodeClient) {
+  constructor(config: PluginConfig, client: OpenCodeClient, circuitBreaker?: CircuitBreaker) {
     this.config = config;
     this.client = client;
+    this.circuitBreaker = circuitBreaker;
     this.rateLimitedModels = new Map();
   }
 
@@ -56,7 +59,7 @@ export class ModelSelector {
     for (let i = searchStartIndex + 1; i < this.config.fallbackModels.length; i++) {
       const model = this.config.fallbackModels[i];
       const key = getModelKey(model.providerID, model.modelID);
-      if (!attemptedModels.has(key) && !this.isModelRateLimited(model.providerID, model.modelID)) {
+      if (!attemptedModels.has(key) && !this.isModelRateLimited(model.providerID, model.modelID) && this.isModelAvailable(model.providerID, model.modelID)) {
         return model;
       }
     }
@@ -65,12 +68,24 @@ export class ModelSelector {
     for (let i = 0; i <= searchStartIndex && i < this.config.fallbackModels.length; i++) {
       const model = this.config.fallbackModels[i];
       const key = getModelKey(model.providerID, model.modelID);
-      if (!attemptedModels.has(key) && !this.isModelRateLimited(model.providerID, model.modelID)) {
+      if (!attemptedModels.has(key) && !this.isModelRateLimited(model.providerID, model.modelID) && this.isModelAvailable(model.providerID, model.modelID)) {
         return model;
       }
     }
 
     return null;
+  }
+
+  /**
+   * Check if a model is available (not rate limited and not blocked by circuit breaker)
+   */
+  private isModelAvailable(providerID: string, modelID: string): boolean {
+    // Check circuit breaker if enabled
+    if (this.circuitBreaker && this.config.circuitBreaker?.enabled) {
+      const modelKey = getModelKey(providerID, modelID);
+      return this.circuitBreaker.canExecute(modelKey);
+    }
+    return true;
   }
 
   /**
@@ -90,7 +105,7 @@ export class ModelSelector {
       if (lastModel) {
         const isLastModelCurrent = currentProviderID === lastModel.providerID && currentModelID === lastModel.modelID;
 
-        if (!isLastModelCurrent && !this.isModelRateLimited(lastModel.providerID, lastModel.modelID)) {
+        if (!isLastModelCurrent && !this.isModelRateLimited(lastModel.providerID, lastModel.modelID) && this.isModelAvailable(lastModel.providerID, lastModel.modelID)) {
           // Use the last model for one more try
           safeShowToast(this.client, {
             body: {

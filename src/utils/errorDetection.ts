@@ -37,8 +37,8 @@ export function isRateLimitError(error: unknown): boolean {
     "quota exceeded",
   ];
 
-  // Check for 429 in text (explicit HTTP status code)
-  if (responseBody.includes("429") || message.includes("429")) {
+  // Check for 429 in text (explicit HTTP status code, word-boundary to avoid false positives like "4291")
+  if (/\b429\b/.test(responseBody) || /\b429\b/.test(message)) {
     return true;
   }
 

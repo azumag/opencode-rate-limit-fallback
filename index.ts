@@ -69,8 +69,8 @@ function isSubagentSessionCreatedEvent(event: { type: string; properties?: unkno
 // Main Plugin Export
 // ============================================================================
 
-export const RateLimitFallback: Plugin = async ({ client, directory }) => {
-  const config = loadConfig(directory);
+export const RateLimitFallback: Plugin = async ({ client, directory, worktree }) => {
+  const { config, source: configSource } = loadConfig(directory, worktree);
 
   // Detect headless mode (no TUI)
   const isHeadless = !client.tui;
@@ -83,6 +83,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 
   // Create logger instance
   const logger = createLogger(logConfig, "RateLimitFallback");
+
+  if (configSource) {
+    logger.info(`Config loaded from ${configSource}`);
+  } else {
+    logger.info("No config file found, using defaults");
+  }
 
   if (!config.enabled) {
     return {};
@@ -167,5 +173,5 @@ export const RateLimitFallback: Plugin = async ({ client, directory }) => {
 export default RateLimitFallback;
 
 // Re-export types only (no class/function re-exports to avoid plugin loader conflicts)
-export type { PluginConfig, MetricsConfig, FallbackModel, FallbackMode } from "./src/types/index.js";
+export type { PluginConfig, MetricsConfig, FallbackModel, FallbackMode, CircuitBreakerConfig, CircuitBreakerState, CircuitBreakerStateType } from "./src/types/index.js";
 export type { LogConfig, Logger } from "./logger.js";

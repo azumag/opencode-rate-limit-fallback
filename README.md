@@ -17,10 +17,11 @@ OpenCode plugin that automatically switches to fallback models when rate limited
   - Jitter to prevent thundering herd problem
   - Configurable retry limits and timeouts
   - Retry statistics tracking
-- Toast notifications for user feedback
-- Subagent session support with automatic fallback propagation to parent sessions
-- Configurable maximum subagent nesting depth
-- **Metrics collection** to track rate limits, fallbacks, and model performance
+ - Toast notifications for user feedback
+ - Subagent session support with automatic fallback propagation to parent sessions
+ - Configurable maximum subagent nesting depth
+ - **Circuit breaker pattern** to prevent cascading failures from consistently failing models
+ - **Metrics collection** to track rate limits, fallbacks, and model performance
 
 ## Installation
 
@@ -85,21 +86,29 @@ Create a configuration file at one of these locations:
       "format": "pretty"
     },
     "resetInterval": "daily"
+  },
+  "circuitBreaker": {
+    "enabled": true,
+    "failureThreshold": 5,
+    "recoveryTimeoutMs": 60000,
+    "halfOpenMaxCalls": 1,
+    "successThreshold": 2
   }
 }
 ```
 
 ### Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable/disable the plugin |
-| `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
-| `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
-| `fallbackModels` | array | See below | List of fallback models in priority order |
-| `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
-| `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
-| `retryPolicy` | object | See below | Retry policy configuration (see below) |
+ | Option | Type | Default | Description |
+ |--------|------|---------|-------------|
+ | `enabled` | boolean | `true` | Enable/disable the plugin |
+ | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
+ | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
+ | `fallbackModels` | array | See below | List of fallback models in priority order |
+ | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
+ | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
+ | `retryPolicy` | object | See below | Retry policy configuration (see below) |
+ | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
 
 ### Fallback Modes
 
@@ -163,11 +172,56 @@ Example with `baseDelayMs: 1000` and `maxDelayMs: 5000`:
 
 Jitter adds random variation to delay times to prevent the "thundering herd" problem, where multiple clients retry simultaneously and overwhelm the API.
 
-- Recommended for production environments with multiple concurrent users
-- `jitterFactor: 0.1` adds ±10% variance to delay times
-- Example: With base delay of 1000ms and jitterFactor 0.1, actual delay will be 900-1100ms
+ - Recommended for production environments with multiple concurrent users
+ - `jitterFactor: 0.1` adds ±10% variance to delay times
+ - Example: With base delay of 1000ms and jitterFactor 0.1, actual delay will be 900-1100ms
 
-### Default Fallback Models
+### Circuit Breaker
+
+The circuit breaker pattern prevents cascading failures by temporarily disabling models that are consistently failing (not due to rate limits).
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `circuitBreaker.enabled` | boolean | `false` | Enable/disable circuit breaker |
+| `circuitBreaker.failureThreshold` | number | `5` | Consecutive failures before opening circuit |
+| `circuitBreaker.recoveryTimeoutMs` | number | `60000` | Wait time before attempting recovery (ms) |
+| `circuitBreaker.halfOpenMaxCalls` | number | `1` | Max calls allowed in HALF_OPEN state |
+| `circuitBreaker.successThreshold` | number | `2` | Successes needed to close circuit |
+
+#### How It Works
+
+The circuit breaker maintains three states for each model:
+
+1. **CLOSED State**: Normal operation, requests pass through
+   - Failures are counted until the threshold is reached
+   - On threshold breach, transitions to OPEN state
+
+2. **OPEN State**: Model is failing, requests fail fast
+   - The circuit is "open" to prevent unnecessary API calls
+   - No requests are allowed through
+   - After the recovery timeout, transitions to HALF_OPEN state
+
+3. **HALF_OPEN State**: Testing if model recovered after timeout
+   - A limited number of test requests are allowed
+   - On success, transitions back to CLOSED state
+   - On failure, returns to OPEN state
+
+#### Important Notes
+
+- **Rate limit errors are NOT counted as failures**: The circuit breaker only tracks actual failures, not rate limit errors
+- **Disabled by default**: Set `circuitBreaker.enabled: true` to activate this feature
+- **Per-model tracking**: Each model has its own circuit state
+- **Toast notifications**: Users are notified when circuits open/close for awareness
+
+#### Configuration Recommendations
+
+| Environment | failureThreshold | recoveryTimeoutMs | halfOpenMaxCalls |
+|-------------|------------------|-------------------|------------------|
+| Development | 3 | 30000 | 1 |
+| Production | 5 | 60000 | 1 |
+| High Availability | 10 | 30000 | 2 |
+
+ ### Default Fallback Models
 
 If no configuration is provided, the following models are used:
 
@@ -206,11 +260,12 @@ When OpenCode uses subagents (e.g., for complex tasks requiring specialized agen
 
 ## Metrics
 
-The plugin includes a metrics collection feature that tracks:
-- Rate limit events per provider/model
-- Fallback statistics (total, successful, failed, average duration)
-- **Retry statistics** (total attempts, successes, failures, average delay)
-- Model performance (requests, successes, failures, response time)
+ The plugin includes a metrics collection feature that tracks:
+ - Rate limit events per provider/model
+ - Fallback statistics (total, successful, failed, average duration)
+ - **Retry statistics** (total attempts, successes, failures, average delay)
+ - Model performance (requests, successes, failures, response time)
+ - **Circuit breaker statistics** (state transitions, open/closed counts)
 
 ### Metrics Configuration
 
@@ -284,15 +339,28 @@ Retries:
 
 Model Performance:
 ----------------------------------------
-  google/gemini-2.5-pro:
-    Requests: 10
-    Successes: 9
-    Failures: 1
-    Avg Response: 0.85s
-    Success Rate: 90.0%
-```
+   google/gemini-2.5-pro:
+     Requests: 10
+     Successes: 9
+     Failures: 1
+     Avg Response: 0.85s
+     Success Rate: 90.0%
 
-**JSON** (machine-readable):
+ Circuit Breaker:
+ ----------------------------------------
+   anthropic/claude-3-5-sonnet-20250514:
+     State: OPEN
+     Failures: 5
+     Successes: 0
+     State Transitions: 2
+   google/gemini-2.5-pro:
+     State: CLOSED
+     Failures: 2
+     Successes: 8
+     State Transitions: 3
+ ```
+
+ **JSON** (machine-readable):
 ```json
 {
   "rateLimits": {
@@ -332,18 +400,32 @@ Model Performance:
       }
     }
   },
-  "modelPerformance": {
-    "google/gemini-2.5-pro": {
-      "requests": 10,
-      "successes": 9,
-      "failures": 1,
-      "averageResponseTime": 850
-    }
-  },
-  "startedAt": 1739148000000,
-  "generatedAt": 1739149800000
-}
-```
+   "modelPerformance": {
+     "google/gemini-2.5-pro": {
+       "requests": 10,
+       "successes": 9,
+       "failures": 1,
+       "averageResponseTime": 850
+     }
+   },
+   "circuitBreaker": {
+     "anthropic/claude-3-5-sonnet-20250514": {
+       "currentState": "OPEN",
+       "failures": 5,
+       "successes": 0,
+       "stateTransitions": 2
+     },
+     "google/gemini-2.5-pro": {
+       "currentState": "CLOSED",
+       "failures": 2,
+       "successes": 8,
+       "stateTransitions": 3
+     }
+   },
+   "startedAt": 1739148000000,
+   "generatedAt": 1739149800000
+ }
+ ```
 
 **CSV** (spreadsheet-friendly):
 ```
@@ -364,10 +446,15 @@ model,attempts,successes,success_rate
 anthropic/claude-3-5-sonnet-20250514,5,3,60.0
 google/gemini-2.5-pro,7,5,71.4
 
-=== MODEL_PERFORMANCE ===
-model,requests,successes,failures,avg_response_time_ms,success_rate
-google/gemini-2.5-pro,10,9,1,850,90.0
-```
+ === MODEL_PERFORMANCE ===
+ model,requests,successes,failures,avg_response_time_ms,success_rate
+ google/gemini-2.5-pro,10,9,1,850,90.0
+
+ === CIRCUIT_BREAKER ===
+ model,current_state,failures,successes,state_transitions
+ anthropic/claude-3-5-sonnet-20250514,OPEN,5,0,2
+ google/gemini-2.5-pro,CLOSED,2,8,3
+ ```
 
 ## License
 

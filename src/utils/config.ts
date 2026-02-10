@@ -11,6 +11,7 @@ import {
   VALID_RESET_INTERVALS,
   DEFAULT_RETRY_POLICY,
   VALID_RETRY_STRATEGIES,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
 } from '../types/index.js';
 
 /**
@@ -22,6 +23,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
   enabled: true,
   fallbackMode: "cycle",
   retryPolicy: DEFAULT_RETRY_POLICY,
+  circuitBreaker: DEFAULT_CIRCUIT_BREAKER_CONFIG,
   log: {
     level: "warn",
     format: "simple",
@@ -38,6 +40,14 @@ export const DEFAULT_CONFIG: PluginConfig = {
 };
 
 /**
+ * Result of config loading, includes which file was loaded
+ */
+export interface ConfigLoadResult {
+  config: PluginConfig;
+  source: string | null;
+}
+
+/**
  * Validate configuration values
  */
 export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
@@ -48,13 +58,17 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   return {
     ...DEFAULT_CONFIG,
     ...config,
-    fallbackModels: config.fallbackModels || DEFAULT_CONFIG.fallbackModels,
+    fallbackModels: Array.isArray(config.fallbackModels) ? config.fallbackModels : DEFAULT_CONFIG.fallbackModels,
     fallbackMode: mode && VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
     retryPolicy: config.retryPolicy ? {
       ...DEFAULT_CONFIG.retryPolicy!,
       ...config.retryPolicy,
       strategy: strategy && VALID_RETRY_STRATEGIES.includes(strategy) ? strategy : DEFAULT_CONFIG.retryPolicy!.strategy,
     } : DEFAULT_CONFIG.retryPolicy!,
+    circuitBreaker: config.circuitBreaker ? {
+      ...DEFAULT_CONFIG.circuitBreaker!,
+      ...config.circuitBreaker,
+    } : DEFAULT_CONFIG.circuitBreaker!,
     log: config.log ? { ...DEFAULT_CONFIG.log, ...config.log } : DEFAULT_CONFIG.log,
     metrics: config.metrics ? {
       ...DEFAULT_CONFIG.metrics!,
@@ -71,21 +85,33 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
 /**
  * Load and validate config from file paths
  */
-export function loadConfig(directory: string): PluginConfig {
+export function loadConfig(directory: string, worktree?: string): ConfigLoadResult {
   const homedir = process.env.HOME || "";
-  const configPaths = [
-    join(directory, ".opencode", "rate-limit-fallback.json"),
-    join(directory, "rate-limit-fallback.json"),
-    join(homedir, ".opencode", "rate-limit-fallback.json"),
-    join(homedir, ".config", "opencode", "rate-limit-fallback.json"),
-  ];
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME || join(homedir, ".config");
+
+  // Build search paths: worktree first, then directory, then home locations
+  const searchDirs: string[] = [];
+  if (worktree) {
+    searchDirs.push(worktree);
+  }
+  if (!worktree || worktree !== directory) {
+    searchDirs.push(directory);
+  }
+
+  const configPaths: string[] = [];
+  for (const dir of searchDirs) {
+    configPaths.push(join(dir, ".opencode", "rate-limit-fallback.json"));
+    configPaths.push(join(dir, "rate-limit-fallback.json"));
+  }
+  configPaths.push(join(homedir, ".opencode", "rate-limit-fallback.json"));
+  configPaths.push(join(xdgConfigHome, "opencode", "rate-limit-fallback.json"));
 
   for (const configPath of configPaths) {
     if (existsSync(configPath)) {
       try {
         const content = readFileSync(configPath, "utf-8");
         const userConfig = JSON.parse(content) as Partial<PluginConfig>;
-        return validateConfig(userConfig);
+        return { config: validateConfig(userConfig), source: configPath };
       } catch (error) {
         // Log config errors to console immediately before logger is initialized
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -94,5 +120,5 @@ export function loadConfig(directory: string): PluginConfig {
     }
   }
 
-  return DEFAULT_CONFIG;
+  return { config: DEFAULT_CONFIG, source: null };
 }

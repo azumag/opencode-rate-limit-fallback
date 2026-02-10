@@ -2141,6 +2141,54 @@ describe('isRateLimitError Edge Cases', () => {
     expect(mockClient.session.abort).not.toHaveBeenCalled();
   });
 
+  it('should NOT match "4291" as a 429 error (strict word boundary)', async () => {
+    const error = { data: { message: "Error code 4291: some other error" } };
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).not.toHaveBeenCalled();
+  });
+
+  it('should NOT match "1429" as a 429 error (strict word boundary)', async () => {
+    const error = { data: { message: "Reference 1429 not found" } };
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).not.toHaveBeenCalled();
+  });
+
+  it('should still match "429" with surrounding non-word characters', async () => {
+    const error = { data: { message: "Error (429): too many requests" } };
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
   it('should handle error with responseBody containing rate limit', async () => {
     const error = { data: { responseBody: "Error: Rate limit exceeded" } };
 

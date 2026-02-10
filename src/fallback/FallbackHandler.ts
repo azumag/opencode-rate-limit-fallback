@@ -7,6 +7,7 @@ import type { FallbackModel, PluginConfig, OpenCodeClient, MessagePart, SessionH
 import { SESSION_ENTRY_TTL_MS } from '../types/index.js';
 import { MetricsManager } from '../metrics/MetricsManager.js';
 import { ModelSelector } from './ModelSelector.js';
+import { CircuitBreaker } from '../circuitbreaker/CircuitBreaker.js';
 import { extractMessageParts, convertPartsToSDKFormat, safeShowToast, getStateKey, getModelKey, DEDUP_WINDOW_MS, STATE_TIMEOUT_MS } from '../utils/helpers.js';
 import type { SubagentTracker } from '../session/SubagentTracker.js';
 import { RetryManager } from '../retry/RetryManager.js';
@@ -34,13 +35,22 @@ export class FallbackHandler {
   // Retry manager reference
   private retryManager: RetryManager;
 
+  // Circuit breaker reference
+  private circuitBreaker?: CircuitBreaker;
+
   constructor(config: PluginConfig, client: OpenCodeClient, logger: Logger, metricsManager: MetricsManager, subagentTracker: SubagentTracker) {
     this.config = config;
     this.client = client;
     this.logger = logger;
-    this.modelSelector = new ModelSelector(config, client);
     this.metricsManager = metricsManager;
     this.subagentTracker = subagentTracker;
+
+    // Initialize circuit breaker if enabled
+    if (config.circuitBreaker?.enabled) {
+      this.circuitBreaker = new CircuitBreaker(config.circuitBreaker, logger, metricsManager, client);
+    }
+
+    this.modelSelector = new ModelSelector(config, client, this.circuitBreaker);
 
     this.currentSessionModel = new Map();
     this.modelRequestStartTimes = new Map();
@@ -360,6 +370,12 @@ export class FallbackHandler {
       // Non-rate-limit error - record model failure metric
       const tracked = this.currentSessionModel.get(sessionID);
       if (tracked) {
+        // Record failure to circuit breaker (isRateLimit = false)
+        if (this.circuitBreaker) {
+          const modelKey = getModelKey(tracked.providerID, tracked.modelID);
+          this.circuitBreaker.recordFailure(modelKey, false);
+        }
+
         if (this.metricsManager) {
           this.metricsManager.recordModelFailure(tracked.providerID, tracked.modelID);
 
@@ -386,6 +402,12 @@ export class FallbackHandler {
         // Record fallback success metric
         const tracked = this.currentSessionModel.get(sessionID);
         if (tracked) {
+          // Record success to circuit breaker
+          if (this.circuitBreaker) {
+            const modelKey = getModelKey(tracked.providerID, tracked.modelID);
+            this.circuitBreaker.recordSuccess(modelKey);
+          }
+
           if (this.metricsManager) {
             this.metricsManager.recordFallbackSuccess(tracked.providerID, tracked.modelID, fallbackInfo.timestamp);
 
@@ -441,6 +463,11 @@ export class FallbackHandler {
 
     this.modelSelector.cleanupStaleEntries();
     this.retryManager.cleanupStaleEntries(SESSION_ENTRY_TTL_MS);
+
+    // Clean up circuit breaker stale entries
+    if (this.circuitBreaker) {
+      this.circuitBreaker.cleanupStaleEntries();
+    }
   }
 
   /**
@@ -453,5 +480,10 @@ export class FallbackHandler {
     this.fallbackInProgress.clear();
     this.fallbackMessages.clear();
     this.retryManager.destroy();
+
+    // Destroy circuit breaker
+    if (this.circuitBreaker) {
+      this.circuitBreaker.destroy();
+    }
   }
 }
