@@ -21,6 +21,7 @@ import {
   DEFAULT_LOG_CONFIG,
   DEFAULT_METRICS_CONFIG,
   DEFAULT_CONFIG_RELOAD_CONFIG,
+  DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
 } from '../config/defaults.js';
 
 /**
@@ -37,6 +38,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
   log: DEFAULT_LOG_CONFIG,
   metrics: DEFAULT_METRICS_CONFIG,
   configReload: DEFAULT_CONFIG_RELOAD_CONFIG,
+  dynamicPrioritization: DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
 };
 
 /**
@@ -118,6 +120,10 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
       ...DEFAULT_CONFIG.configReload!,
       ...config.configReload,
     } : DEFAULT_CONFIG.configReload!,
+    dynamicPrioritization: config.dynamicPrioritization ? {
+      ...DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
+      ...config.dynamicPrioritization,
+    } : DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
   };
 }
 

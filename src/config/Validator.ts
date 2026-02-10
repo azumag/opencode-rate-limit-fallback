@@ -529,6 +529,107 @@ export class ConfigValidator {
       }
     }
 
+    // Validate dynamicPrioritization
+    if (config.dynamicPrioritization) {
+      if (typeof config.dynamicPrioritization !== 'object') {
+        errors.push({
+          path: 'dynamicPrioritization',
+          message: 'dynamicPrioritization must be an object',
+          severity: 'error',
+          value: config.dynamicPrioritization,
+        });
+      } else {
+        if (config.dynamicPrioritization.enabled !== undefined && typeof config.dynamicPrioritization.enabled !== 'boolean') {
+          errors.push({
+            path: 'dynamicPrioritization.enabled',
+            message: 'enabled must be a boolean',
+            severity: 'error',
+            value: config.dynamicPrioritization.enabled,
+          });
+        }
+
+        if (config.dynamicPrioritization.updateInterval !== undefined) {
+          if (typeof config.dynamicPrioritization.updateInterval !== 'number' || config.dynamicPrioritization.updateInterval < 1) {
+            errors.push({
+              path: 'dynamicPrioritization.updateInterval',
+              message: 'updateInterval must be a positive number',
+              severity: 'error',
+              value: config.dynamicPrioritization.updateInterval,
+            });
+          }
+        }
+
+        if (config.dynamicPrioritization.successRateWeight !== undefined) {
+          if (typeof config.dynamicPrioritization.successRateWeight !== 'number' || config.dynamicPrioritization.successRateWeight < 0 || config.dynamicPrioritization.successRateWeight > 1) {
+            errors.push({
+              path: 'dynamicPrioritization.successRateWeight',
+              message: 'successRateWeight must be a number between 0 and 1',
+              severity: 'error',
+              value: config.dynamicPrioritization.successRateWeight,
+            });
+          }
+        }
+
+        if (config.dynamicPrioritization.responseTimeWeight !== undefined) {
+          if (typeof config.dynamicPrioritization.responseTimeWeight !== 'number' || config.dynamicPrioritization.responseTimeWeight < 0 || config.dynamicPrioritization.responseTimeWeight > 1) {
+            errors.push({
+              path: 'dynamicPrioritization.responseTimeWeight',
+              message: 'responseTimeWeight must be a number between 0 and 1',
+              severity: 'error',
+              value: config.dynamicPrioritization.responseTimeWeight,
+            });
+          }
+        }
+
+        if (config.dynamicPrioritization.recentUsageWeight !== undefined) {
+          if (typeof config.dynamicPrioritization.recentUsageWeight !== 'number' || config.dynamicPrioritization.recentUsageWeight < 0 || config.dynamicPrioritization.recentUsageWeight > 1) {
+            errors.push({
+              path: 'dynamicPrioritization.recentUsageWeight',
+              message: 'recentUsageWeight must be a number between 0 and 1',
+              severity: 'error',
+              value: config.dynamicPrioritization.recentUsageWeight,
+            });
+          }
+        }
+
+        // Validate that weights sum to approximately 1.0
+        const successRateWeight = config.dynamicPrioritization.successRateWeight ?? 0.6;
+        const responseTimeWeight = config.dynamicPrioritization.responseTimeWeight ?? 0.3;
+        const recentUsageWeight = config.dynamicPrioritization.recentUsageWeight ?? 0.1;
+        const totalWeight = successRateWeight + responseTimeWeight + recentUsageWeight;
+        if (Math.abs(totalWeight - 1.0) > 0.1) {
+          warnings.push({
+            path: 'dynamicPrioritization',
+            message: `Weights sum to ${totalWeight.toFixed(2)}, which is significantly different from 1.0. This may affect prioritization behavior.`,
+            severity: 'warning',
+            value: { successRateWeight, responseTimeWeight, recentUsageWeight, totalWeight },
+          });
+        }
+
+        if (config.dynamicPrioritization.minSamples !== undefined) {
+          if (typeof config.dynamicPrioritization.minSamples !== 'number' || config.dynamicPrioritization.minSamples < 1) {
+            errors.push({
+              path: 'dynamicPrioritization.minSamples',
+              message: 'minSamples must be a positive number',
+              severity: 'error',
+              value: config.dynamicPrioritization.minSamples,
+            });
+          }
+        }
+
+        if (config.dynamicPrioritization.maxHistorySize !== undefined) {
+          if (typeof config.dynamicPrioritization.maxHistorySize !== 'number' || config.dynamicPrioritization.maxHistorySize < 1) {
+            errors.push({
+              path: 'dynamicPrioritization.maxHistorySize',
+              message: 'maxHistorySize must be a positive number',
+              severity: 'error',
+              value: config.dynamicPrioritization.maxHistorySize,
+            });
+          }
+        }
+      }
+    }
+
     // Log warnings if enabled
     if (logWarnings && warnings.length > 0 && this.logger) {
       for (const warning of warnings) {

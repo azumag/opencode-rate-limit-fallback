@@ -12,6 +12,8 @@ import { extractMessageParts, convertPartsToSDKFormat, safeShowToast, getStateKe
 import type { SubagentTracker } from '../session/SubagentTracker.js';
 import { RetryManager } from '../retry/RetryManager.js';
 import type { HealthTracker } from '../health/HealthTracker.js';
+import { DynamicPrioritizer } from '../dynamic/DynamicPrioritizer.js';
+import { DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG } from '../config/defaults.js';
 
 /**
  * Fallback Handler class for orchestrating the fallback retry flow
@@ -43,6 +45,9 @@ export class FallbackHandler {
   // Health tracker reference
   private healthTracker?: HealthTracker;
 
+  // Dynamic prioritizer reference
+  private dynamicPrioritizer?: DynamicPrioritizer;
+
   constructor(
     config: PluginConfig,
     client: OpenCodeClient,
@@ -63,7 +68,13 @@ export class FallbackHandler {
       this.circuitBreaker = new CircuitBreaker(config.circuitBreaker, logger, metricsManager, client);
     }
 
-    this.modelSelector = new ModelSelector(config, client, this.circuitBreaker, healthTracker);
+    // Initialize dynamic prioritizer if enabled and health tracker is available
+    if (healthTracker && config.dynamicPrioritization?.enabled) {
+      const dynamicConfig = { ...DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG, ...config.dynamicPrioritization };
+      this.dynamicPrioritizer = new DynamicPrioritizer(dynamicConfig, healthTracker, logger, metricsManager);
+    }
+
+    this.modelSelector = new ModelSelector(config, client, this.circuitBreaker, healthTracker, this.dynamicPrioritizer);
 
     this.currentSessionModel = new Map();
     this.modelRequestStartTimes = new Map();
@@ -125,8 +136,8 @@ export class FallbackHandler {
   }
 
   /**
-   * Queue the prompt asynchronously (non-blocking), then abort the retry loop.
-   * promptAsync FIRST queues pending work so the server doesn't dispose on idle.
+   * Queue prompt asynchronously (non-blocking), then abort retry loop.
+   * promptAsync FIRST queues pending work so that server doesn't dispose on idle.
    * abort SECOND cancels the retry loop; the server sees the queued prompt and processes it.
    */
   async retryWithModel(
@@ -135,14 +146,19 @@ export class FallbackHandler {
     parts: MessagePart[],
     hierarchy: SessionHierarchy | null
   ): Promise<void> {
-    // Track the new model for this session
+    // Record model usage for dynamic prioritization
+    if (this.dynamicPrioritizer) {
+      this.dynamicPrioritizer.recordUsage(model.providerID, model.modelID);
+    }
+
+    // Track new model for this session
     this.currentSessionModel.set(targetSessionID, {
       providerID: model.providerID,
       modelID: model.modelID,
       lastUpdated: Date.now(),
     });
 
-    // If this is a root session with subagents, propagate the model to all subagents
+    // If this is a root session with subagents, propagate model to all subagents
     if (hierarchy) {
       if (hierarchy.rootSessionID === targetSessionID) {
         hierarchy.sharedFallbackState = "completed";
@@ -554,6 +570,25 @@ export class FallbackHandler {
         this.circuitBreaker = undefined;
         this.modelSelector.setCircuitBreaker(undefined);
       }
+    }
+
+    // Handle dynamic prioritizer configuration changes
+    const oldDynamicPrioritizerEnabled = this.dynamicPrioritizer !== undefined;
+    if (newConfig.dynamicPrioritization?.enabled !== oldDynamicPrioritizerEnabled) {
+      if (newConfig.dynamicPrioritization?.enabled && this.healthTracker) {
+        // Create new dynamic prioritizer
+        const dynamicConfig = { ...DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG, ...newConfig.dynamicPrioritization };
+        this.dynamicPrioritizer = new DynamicPrioritizer(dynamicConfig, this.healthTracker, this.logger, this.metricsManager);
+        this.modelSelector.setDynamicPrioritizer(this.dynamicPrioritizer);
+      } else if (!newConfig.dynamicPrioritization?.enabled) {
+        // Disable dynamic prioritizer
+        this.dynamicPrioritizer = undefined;
+        this.modelSelector.setDynamicPrioritizer(undefined);
+      }
+    } else if (this.dynamicPrioritizer && newConfig.dynamicPrioritization) {
+      // Update existing dynamic prioritizer config
+      const dynamicConfig = { ...DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG, ...newConfig.dynamicPrioritization };
+      this.dynamicPrioritizer.updateConfig(dynamicConfig);
     }
 
     this.logger.debug('FallbackHandler configuration updated');

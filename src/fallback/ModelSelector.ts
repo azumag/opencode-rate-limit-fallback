@@ -5,6 +5,7 @@
 import type { FallbackModel, PluginConfig, OpenCodeClient } from '../types/index.js';
 import type { CircuitBreaker } from '../circuitbreaker/index.js';
 import type { HealthTracker } from '../health/HealthTracker.js';
+import type { DynamicPrioritizer } from '../dynamic/DynamicPrioritizer.js';
 import { getModelKey } from '../utils/helpers.js';
 import { safeShowToast } from '../utils/helpers.js';
 
@@ -17,12 +18,20 @@ export class ModelSelector {
   private client: OpenCodeClient;
   private circuitBreaker?: CircuitBreaker;
   private healthTracker?: HealthTracker;
+  private dynamicPrioritizer?: DynamicPrioritizer;
 
-  constructor(config: PluginConfig, client: OpenCodeClient, circuitBreaker?: CircuitBreaker, healthTracker?: HealthTracker) {
+  constructor(
+    config: PluginConfig,
+    client: OpenCodeClient,
+    circuitBreaker?: CircuitBreaker,
+    healthTracker?: HealthTracker,
+    dynamicPrioritizer?: DynamicPrioritizer
+  ) {
     this.config = config;
     this.client = client;
     this.circuitBreaker = circuitBreaker;
     this.healthTracker = healthTracker;
+    this.dynamicPrioritizer = dynamicPrioritizer;
     this.rateLimitedModels = new Map();
   }
 
@@ -66,6 +75,12 @@ export class ModelSelector {
       if (!attemptedModels.has(key) && !this.isModelRateLimited(model.providerID, model.modelID) && this.isModelAvailable(model.providerID, model.modelID)) {
         candidates.push(model);
       }
+    }
+
+    // Apply dynamic prioritization if enabled
+    if (this.dynamicPrioritizer && this.dynamicPrioritizer.isEnabled() && this.dynamicPrioritizer.shouldUseDynamicOrdering()) {
+      const prioritizedCandidates = this.dynamicPrioritizer.getPrioritizedModels(candidates);
+      return prioritizedCandidates[0] || null;
     }
 
     // Sort by health score if health tracker is enabled
@@ -197,5 +212,12 @@ export class ModelSelector {
    */
   setCircuitBreaker(circuitBreaker: CircuitBreaker | undefined): void {
     this.circuitBreaker = circuitBreaker;
+  }
+
+  /**
+   * Set dynamic prioritizer (for hot reload)
+   */
+  setDynamicPrioritizer(dynamicPrioritizer: DynamicPrioritizer | undefined): void {
+    this.dynamicPrioritizer = dynamicPrioritizer;
   }
 }

@@ -119,3 +119,20 @@ export const DEFAULT_CONFIG_RELOAD_CONFIG = {
   debounceMs: 1000,
   notifyOnReload: true,
 } as const;
+
+// ============================================================================
+// Dynamic Prioritization Defaults
+// ============================================================================
+
+/**
+ * Default dynamic prioritization configuration
+ */
+export const DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG = {
+  enabled: false,
+  updateInterval: 10,
+  successRateWeight: 0.6,
+  responseTimeWeight: 0.3,
+  recentUsageWeight: 0.1,
+  minSamples: 3,
+  maxHistorySize: 100,
+} as const;

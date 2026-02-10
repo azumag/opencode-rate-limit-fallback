@@ -18,10 +18,11 @@ OpenCode plugin that automatically switches to fallback models when rate limited
   - Configurable retry limits and timeouts
   - Retry statistics tracking
  - Toast notifications for user feedback
- - Subagent session support with automatic fallback propagation to parent sessions
- - Configurable maximum subagent nesting depth
- - **Circuit breaker pattern** to prevent cascading failures from consistently failing models
- - **Metrics collection** to track rate limits, fallbacks, and model performance
+  - Subagent session support with automatic fallback propagation to parent sessions
+  - Configurable maximum subagent nesting depth
+  - **Circuit breaker pattern** to prevent cascading failures from consistently failing models
+  - **Metrics collection** to track rate limits, fallbacks, and model performance
+  - **Configuration hot reload** - Reload configuration changes without restarting OpenCode
 
 ## Installation
 
@@ -98,6 +99,12 @@ Create a configuration file at one of these locations:
     "recoveryTimeoutMs": 60000,
     "halfOpenMaxCalls": 1,
     "successThreshold": 2
+  },
+  "configReload": {
+    "enabled": true,
+    "watchFile": true,
+    "debounceMs": 1000,
+    "notifyOnReload": true
   }
 }
 ```
@@ -111,9 +118,10 @@ Create a configuration file at one of these locations:
   | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
   | `fallbackModels` | array | See below | List of fallback models in priority order |
   | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
-  | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
-  | `retryPolicy` | object | See below | Retry policy configuration (see below) |
-  | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
+   | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
+   | `retryPolicy` | object | See below | Retry policy configuration (see below) |
+   | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
+   | `configReload` | object | See below | Configuration hot reload settings (see below) |
 
 ### Git Worktree Support
 
@@ -248,6 +256,75 @@ The circuit breaker maintains three states for each model:
 | Development | 3 | 30000 | 1 |
 | Production | 5 | 60000 | 1 |
 | High Availability | 10 | 30000 | 2 |
+
+### Configuration Hot Reload
+
+The plugin supports automatic configuration reloading without requiring you to restart OpenCode. When you edit your configuration file, the plugin detects the changes and applies them seamlessly.
+
+#### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `configReload.enabled` | boolean | `false` | Enable/disable configuration hot reload |
+| `configReload.watchFile` | boolean | `true` | Watch config file for changes |
+| `configReload.debounceMs` | number | `1000` | Debounce delay (ms) to handle multiple file writes |
+| `configReload.notifyOnReload` | boolean | `true` | Show toast notifications on reload |
+
+#### How It Works
+
+1. **File Watching**: When enabled, the plugin watches your configuration file for changes
+2. **Debouncing**: Multiple file writes (e.g., from editors) are debounced to prevent unnecessary reloads
+3. **Validation**: New configuration is validated before applying it
+4. **Graceful Application**: If valid, the new configuration is applied without interrupting active sessions
+5. **Toast Notifications**: You receive toast notifications for successful or failed reloads
+
+#### Behavior
+
+**What gets reloaded:**
+- Fallback model list
+- Cooldown periods
+- Fallback mode
+- Retry policies
+- Circuit breaker settings
+- Metrics configuration
+- Log configuration
+- Health tracking settings
+
+**What doesn't change:**
+- Active session states
+- Rate-limited model tracking
+- Health tracking data
+- Metrics history
+
+#### Configuration Examples
+
+**Enable hot reload:**
+```json
+{
+  "configReload": {
+    "enabled": true
+  }
+}
+```
+
+**Full configuration:**
+```json
+{
+  "configReload": {
+    "enabled": true,
+    "watchFile": true,
+    "debounceMs": 1000,
+    "notifyOnReload": true
+  }
+}
+```
+
+#### Important Notes
+
+- **Disabled by default**: Set `configReload.enabled: true` to activate this feature
+- **Valid configs only**: Invalid configurations are rejected, and old config is preserved
+- **No restart needed**: You can experiment with different configurations without restarting OpenCode
+- **Session preservation**: Active sessions continue working during reload
 
 ### ⚠️ Important: Configuration Required
 

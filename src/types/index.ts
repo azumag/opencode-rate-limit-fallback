@@ -136,6 +136,32 @@ export interface HealthTrackerConfig {
  */
 export type HealthPersistenceConfig = HealthTrackerConfig;
 
+// ============================================================================
+// Dynamic Prioritization Types
+// ============================================================================
+
+/**
+ * Dynamic prioritization configuration
+ */
+export interface DynamicPrioritizationConfig {
+  enabled: boolean;
+  updateInterval: number;           // Score update interval (number of requests)
+  successRateWeight: number;        // Success rate weight (default: 0.6)
+  responseTimeWeight: number;       // Response time weight (default: 0.3)
+  recentUsageWeight: number;        // Recent usage weight (default: 0.1)
+  minSamples: number;               // Minimum samples before using dynamic ordering (default: 3)
+  maxHistorySize: number;           // Maximum history size for usage tracking (default: 100)
+}
+
+/**
+ * Dynamic prioritization metrics
+ */
+export interface DynamicPrioritizationMetrics {
+  enabled: boolean;
+  reorders: number;                 // Number of times models were reordered
+  modelsWithDynamicScores: number;   // Number of models with calculated dynamic scores
+}
+
 /**
  * Health metrics for a model
  */
@@ -222,6 +248,7 @@ export interface PluginConfig {
   verbose?: boolean;
   errorPatterns?: ErrorPatternsConfig;
   configReload?: ConfigReloadConfig;
+  dynamicPrioritization?: DynamicPrioritizationConfig;
 }
 
 // ============================================================================
@@ -408,6 +435,7 @@ export interface MetricsData {
     total: CircuitBreakerMetrics;
     byModel: Map<string, CircuitBreakerMetrics>;
   };
+  dynamicPrioritization: DynamicPrioritizationMetrics;
   startedAt: number;
   generatedAt: number;
 }

@@ -57,6 +57,11 @@ export class MetricsManager {
         },
         byModel: new Map(),
       },
+      dynamicPrioritization: {
+        enabled: false,
+        reorders: 0,
+        modelsWithDynamicScores: 0,
+      },
       startedAt: Date.now(),
       generatedAt: Date.now(),
     };
@@ -112,6 +117,11 @@ export class MetricsManager {
           currentClosed: 0,
         },
         byModel: new Map(),
+      },
+      dynamicPrioritization: {
+        enabled: false,
+        reorders: 0,
+        modelsWithDynamicScores: 0,
       },
       startedAt: Date.now(),
       generatedAt: Date.now(),
@@ -321,6 +331,30 @@ export class MetricsManager {
   }
 
   /**
+   * Update dynamic prioritization metrics
+   */
+  updateDynamicPrioritizationMetrics(
+    enabled: boolean,
+    reorders: number,
+    modelsWithDynamicScores: number
+  ): void {
+    if (!this.config.enabled) return;
+
+    this.metrics.dynamicPrioritization.enabled = enabled;
+    this.metrics.dynamicPrioritization.reorders = reorders;
+    this.metrics.dynamicPrioritization.modelsWithDynamicScores = modelsWithDynamicScores;
+  }
+
+  /**
+   * Record a model reorder event
+   */
+  recordDynamicPrioritizationReorder(): void {
+    if (!this.config.enabled) return;
+
+    this.metrics.dynamicPrioritization.reorders++;
+  }
+
+  /**
    * Helper method to update circuit breaker state counts
    * @private
    */
@@ -405,6 +439,7 @@ export class MetricsManager {
           Array.from(metrics.circuitBreaker.byModel.entries()).map(([k, v]) => [k, v])
         ),
       },
+      dynamicPrioritization: metrics.dynamicPrioritization,
       startedAt: metrics.startedAt,
       generatedAt: metrics.generatedAt,
     };
@@ -531,6 +566,14 @@ export class MetricsManager {
         }
       }
     }
+    lines.push("");
+
+    // Dynamic Prioritization
+    lines.push("Dynamic Prioritization:");
+    lines.push("-".repeat(40));
+    lines.push(`  Enabled: ${metrics.dynamicPrioritization.enabled ? 'Yes' : 'No'}`);
+    lines.push(`  Reorders: ${metrics.dynamicPrioritization.reorders}`);
+    lines.push(`  Models with dynamic scores: ${metrics.dynamicPrioritization.modelsWithDynamicScores}`);
 
     return lines.join("\n");
   }
@@ -648,6 +691,16 @@ export class MetricsManager {
         successRate,
       ].join(","));
     }
+    lines.push("");
+
+    // Dynamic Prioritization CSV
+    lines.push("=== DYNAMIC_PRIORITIZATION ===");
+    lines.push("enabled,reorders,models_with_dynamic_scores");
+    lines.push([
+      metrics.dynamicPrioritization.enabled ? 'Yes' : 'No',
+      metrics.dynamicPrioritization.reorders,
+      metrics.dynamicPrioritization.modelsWithDynamicScores,
+    ].join(","));
 
     return lines.join("\n");
   }
