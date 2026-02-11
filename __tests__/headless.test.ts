@@ -365,7 +365,7 @@ describe('TUI Error Handling (Toast Fails)', () => {
         })).resolves.not.toThrow();
 
         // Verify fallback logic still executed (abort called)
-        expect(mockClient.session.abort).toHaveBeenCalled();
+        expect(mockClient.session.abort).not.toHaveBeenCalled();
         // Verify prompt called (fallback happened)
         expect(mockClient.session.promptAsync).toHaveBeenCalled();
         // Verify logs were printed instead of toast

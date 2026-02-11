@@ -124,21 +124,9 @@ export class FallbackHandler {
   }
 
   /**
-   * Abort current session with error handling
-   */
-  private async abortSession(sessionID: string): Promise<void> {
-    try {
-      await this.client.session.abort({ path: { id: sessionID } });
-    } catch (abortError) {
-      // Silently ignore abort errors and continue with fallback
-      this.logger.debug(`Failed to abort session ${sessionID}`, { error: abortError });
-    }
-  }
-
-  /**
-   * Queue prompt asynchronously (non-blocking), then abort retry loop.
-   * promptAsync FIRST queues pending work so that server doesn't dispose on idle.
-   * abort SECOND cancels the retry loop; the server sees the queued prompt and processes it.
+   * Queue prompt asynchronously (non-blocking) to schedule fallback.
+   * The server's retry loop finishes naturally; it then picks up the queued prompt.
+   * We do NOT call abort — its AbortController signal persists and kills the new stream.
    */
   async retryWithModel(
     targetSessionID: string,
@@ -196,16 +184,14 @@ export class FallbackHandler {
       },
     });
 
-    // 2. abort: cancel the retry loop; server sees queued prompt and processes it
-    // Only abort in TUI mode - in headless, let server's retry loop finish naturally
-    // so the pending prompt is processed without abort signal interference
-    if (this.client.tui) {
-      await this.abortSession(targetSessionID);
-    }
+    // Do NOT call abort after promptAsync.
+    // The AbortController signal persists and kills the newly queued stream too,
+    // causing "interrupted" in TUI mode and server disposal in headless mode.
+    // Let the server's retry loop finish naturally; it will pick up the queued prompt.
 
     await safeShowToast(this.client, {
       body: {
-        title: this.client.tui ? "Fallback Successful" : "Fallback Queued",
+        title: "Fallback Queued",
         message: `Now using ${model.modelID}`,
         variant: "success",
         duration: 3000,
