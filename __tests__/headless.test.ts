@@ -50,6 +50,19 @@ const createHeadlessClient = () => ({
     // tui is undefined in headless mode
 });
 
+// Helper to create mock client WITH TUI (for config loading tests)
+const createTuiClient = () => ({
+    session: {
+        abort: vi.fn().mockResolvedValue(undefined),
+        messages: vi.fn(),
+        prompt: vi.fn().mockResolvedValue(undefined),
+        promptAsync: vi.fn().mockResolvedValue(undefined),
+    },
+    tui: {
+        showToast: vi.fn().mockResolvedValue(undefined),
+    },
+});
+
 // Helper to create mock client WITH TUI that throws errors
 const createFailingTuiClient = () => ({
     session: {
@@ -67,6 +80,7 @@ const createFailingTuiClient = () => ({
 const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 const consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
 const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
 describe('Headless Mode (No TUI)', () => {
     let pluginInstance: any;
@@ -93,96 +107,22 @@ describe('Headless Mode (No TUI)', () => {
         vi.clearAllMocks();
     });
 
-    it('should fallback without crashing and log messages when TUI is missing', async () => {
-        // Mock messages to return valid data
-        mockClient.session.messages.mockResolvedValue({
-            data: [
-                {
-                    info: { id: 'msg1', role: 'user' },
-                    parts: [{ type: 'text', text: 'test message' }],
-                },
-            ],
-        });
-
-        // Simulate rate limit error
-        const error = { name: "APIError", data: { statusCode: 429 } };
-
-        // This should NOT throw "Cannot read properties of undefined (reading 'showToast')"
-        await expect(pluginInstance.event?.({
-            event: {
-                type: 'session.error',
-                properties: { sessionID: 'test-session', error },
-            },
-        })).resolves.not.toThrow();
-
-        // Verify promptAsync called (fallback queued)
-        expect(mockClient.session.promptAsync).toHaveBeenCalled();
-        // Verify abort is NOT called in headless mode
-        // (abort's AbortController signal persists and kills the new stream)
-        expect(mockClient.session.abort).not.toHaveBeenCalled();
-
-        // Verify logs were printed (using console spy because logger writes to console)
-        // "Rate Limit Detected" is warning
-        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[RateLimitFallback] Rate Limit Detected'));
-
-        // "Retrying" is info
-        // Note: Default log level is 'warn', so info logs might not show up unless configured.
-        // However, we didn't change default config level suitable for headless yet.
-        // Let's verify at least warning is logged.
+    it('should disable fallback in headless mode (no event handler returned)', async () => {
+        // In headless mode, model fallback is disabled entirely.
+        // The plugin should return an empty object with no event handler.
+        expect(pluginInstance.event).toBeUndefined();
     });
 
-    it('should NOT call abort in headless mode (only promptAsync)', async () => {
-        // In headless mode, abort's AbortController signal persists and kills the new stream.
-        // So we only call promptAsync to queue the fallback prompt and let the server's
-        // retry loop finish naturally.
-        mockClient.session.messages.mockResolvedValue({
-            data: [
-                {
-                    info: { id: 'msg-no-abort', role: 'user' },
-                    parts: [{ type: 'text', text: 'test message' }],
-                },
-            ],
-        });
-
-        const error = { name: "APIError", data: { statusCode: 429 } };
-
-        await pluginInstance.event?.({
-            event: {
-                type: 'session.error',
-                properties: { sessionID: 'test-no-abort', error },
-            },
-        });
-
-        // promptAsync IS called to queue fallback prompt
-        expect(mockClient.session.promptAsync).toHaveBeenCalled();
-        // abort is NOT called — prevents AbortController signal from killing new stream
+    it('should NOT call abort or promptAsync in headless mode', async () => {
+        // Since fallback is disabled, no session methods should be called
+        expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
         expect(mockClient.session.abort).not.toHaveBeenCalled();
     });
 
-    it('should handle toast with different structures in headless mode', async () => {
-        // Mock messages to return valid data so fallback can happen
-        mockClient.session.messages.mockResolvedValue({
-            data: [
-                {
-                    info: { id: 'msg1', role: 'user' },
-                    parts: [{ type: 'text', text: 'test message' }],
-                },
-            ],
-        });
-
-        // Test with standard toast structure
-        await expect(pluginInstance.event?.({
-            event: {
-                type: 'session.error',
-                properties: {
-                    sessionID: 'test-session-2',
-                    error: { name: "APIError", data: { statusCode: 429 } },
-                },
-            },
-        })).resolves.not.toThrow();
-
-        // Verify logging works even without toast.body
-        expect(consoleWarnSpy).toHaveBeenCalled();
+    it('should log that headless mode disables fallback', async () => {
+        // Logger uses console.log for info level messages
+        const allLogCalls = consoleLogSpy.mock.calls.map(c => String(c[0]));
+        expect(allLogCalls.some(msg => msg.includes('Headless mode detected'))).toBe(true);
     });
 });
 
@@ -191,7 +131,7 @@ describe('Config Loading with Worktree', () => {
 
     beforeEach(() => {
         vi.resetAllMocks();
-        mockClient = createHeadlessClient();
+        mockClient = createTuiClient();
     });
 
     afterEach(() => {

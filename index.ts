@@ -193,6 +193,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
     return {};
   }
 
+  // Disable fallback in headless mode — headless sessions should use their configured model only
+  if (isHeadless) {
+    logger.info("Headless mode detected — model fallback disabled");
+    return {};
+  }
+
   // Initialize error pattern registry
   const errorPatternRegistry = new ErrorPatternRegistry(logger);
   if (config.errorPatterns?.custom) {
