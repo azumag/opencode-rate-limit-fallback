@@ -2,11 +2,8 @@
  * Error Pattern Registry for rate limit error detection
  */
 
-import type { ErrorPattern, LearningConfig, LearnedPattern } from '../types/index.js';
+import type { ErrorPattern, LearnedPattern, PatternLearningConfig } from '../types/index.js';
 import { Logger } from '../../logger.js';
-import { PatternExtractor } from './PatternExtractor.js';
-import { ConfidenceScorer } from './ConfidenceScorer.js';
-import { PatternStorage } from './PatternStorage.js';
 import { PatternLearner } from './PatternLearner.js';
 
 /**
@@ -15,119 +12,23 @@ import { PatternLearner } from './PatternLearner.js';
  */
 export class ErrorPatternRegistry {
   private patterns: ErrorPattern[] = [];
-  private learnedPatterns: Map<string, LearnedPattern> = new Map();
-  private patternLearner?: PatternLearner;
-  private logger: Logger;
-  private configPath?: string;
+  private learnedPatterns: LearnedPattern[] = [];
+  private patternLearner: PatternLearner | null = null;
+  private learningConfig: PatternLearningConfig | null = null;
+  // Logger is available for future use
+  // @ts-ignore - Unused but kept for potential future use
+  private _logger: Logger;
 
-  constructor(logger?: Logger, config?: { learningConfig?: LearningConfig; configPath?: string }) {
+  constructor(logger?: Logger) {
     // Initialize logger
-    this.logger = logger || {
+    this._logger = logger || {
       debug: () => {},
       info: () => {},
       warn: () => {},
       error: () => {},
     } as unknown as Logger;
 
-    this.configPath = config?.configPath;
-
     this.registerDefaultPatterns();
-
-    // Initialize pattern learning if enabled
-    if (config?.learningConfig && config.learningConfig.enabled) {
-      this.initializeLearning(config.learningConfig);
-    }
-  }
-
-  /**
-   * Initialize pattern learning
-   */
-  private initializeLearning(learningConfig: LearningConfig): void {
-    if (!this.configPath) {
-      this.logger.warn('[ErrorPatternRegistry] Config path not provided, pattern learning disabled');
-      return;
-    }
-
-    try {
-      const extractor = new PatternExtractor();
-      const scorer = new ConfidenceScorer(learningConfig, this.patterns);
-      const storage = new PatternStorage(this.configPath, this.logger);
-
-      this.patternLearner = new PatternLearner(
-        extractor,
-        scorer,
-        storage,
-        learningConfig,
-        this.logger
-      );
-
-      // Note: Patterns will be loaded asynchronously via loadLearnedPatternsAsync()
-      this.logger.info('[ErrorPatternRegistry] Pattern learning enabled');
-    } catch (error) {
-      this.logger.error('[ErrorPatternRegistry] Failed to initialize pattern learning', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  /**
-   * Load learned patterns from storage (async)
-   */
-  async loadLearnedPatternsAsync(): Promise<void> {
-    if (!this.patternLearner) {
-      return;
-    }
-
-    try {
-      await this.patternLearner.loadLearnedPatterns();
-      const learnedPatterns = this.patternLearner.getLearnedPatterns();
-      for (const pattern of learnedPatterns) {
-        this.learnedPatterns.set(pattern.name, pattern);
-        this.register(pattern);
-      }
-
-      this.logger.info(`[ErrorPatternRegistry] Loaded ${learnedPatterns.length} learned patterns`);
-    } catch (error) {
-      this.logger.error('[ErrorPatternRegistry] Failed to load learned patterns', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  /**
-   * Load learned patterns from storage (synchronous - kept for backward compatibility)
-   */
-  loadLearnedPatterns(): void {
-    if (!this.patternLearner) {
-      return;
-    }
-
-    try {
-      // Load patterns without awaiting (sync fallback)
-      this.patternLearner.loadLearnedPatterns().catch((error) => {
-        this.logger.error('[ErrorPatternRegistry] Failed to load learned patterns asynchronously', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-
-      const learnedPatterns = this.patternLearner.getLearnedPatterns();
-      for (const pattern of learnedPatterns) {
-        this.learnedPatterns.set(pattern.name, pattern);
-        this.register(pattern);
-      }
-    } catch (error) {
-      this.logger.error('[ErrorPatternRegistry] Failed to load learned patterns', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  /**
-   * Reload learned patterns (for config hot reload)
-   */
-  async reloadLearnedPatterns(): Promise<void> {
-    this.learnedPatterns.clear();
-    await this.loadLearnedPatternsAsync();
   }
 
   /**
@@ -223,22 +124,72 @@ export class ErrorPatternRegistry {
   }
 
   /**
+   * Initialize pattern learning
+   */
+  initializePatternLearning(config: PatternLearningConfig, configFilePath: string): void {
+    this.learningConfig = config;
+    this.patternLearner = new PatternLearner(config, this._logger);
+    this.patternLearner.setConfigFilePath(configFilePath);
+  }
+
+  /**
+   * Check if pattern learning is enabled
+   */
+  isLearningEnabled(): boolean {
+    return this.learningConfig?.enabled === true && this.patternLearner !== null;
+  }
+
+  /**
+   * Get the pattern learner instance
+   */
+  getPatternLearner(): PatternLearner | null {
+    return this.patternLearner;
+  }
+
+  /**
+   * Add a learned pattern
+   */
+  addLearnedPattern(pattern: LearnedPattern): void {
+    // Check for duplicates by name
+    const existingIndex = this.learnedPatterns.findIndex(p => p.name === pattern.name);
+    if (existingIndex >= 0) {
+      this.learnedPatterns[existingIndex] = pattern;
+    } else {
+      this.learnedPatterns.push(pattern);
+    }
+  }
+
+  /**
+   * Get all learned patterns
+   */
+  getLearnedPatterns(): LearnedPattern[] {
+    return [...this.learnedPatterns];
+  }
+
+  /**
+   * Clear all learned patterns
+   */
+  clearLearnedPatterns(): void {
+    this.learnedPatterns = [];
+  }
+
+  /**
+   * Update learned patterns
+   */
+  updateLearnedPatterns(patterns: LearnedPattern[]): void {
+    this.learnedPatterns = [...patterns];
+  }
+
+  /**
    * Check if an error matches any registered rate limit pattern
    */
   isRateLimitError(error: unknown): boolean {
-    // Check if this is a rate limit error
-    const isRateLimit = this.getMatchedPattern(error) !== null;
-
-    // If enabled, learn from this error
-    if (isRateLimit && this.patternLearner) {
-      this.patternLearner.learnFromError(error);
-    }
-
-    return isRateLimit;
+    return this.getMatchedPattern(error) !== null;
   }
 
   /**
    * Get the matched pattern for an error, or null if no match
+   * Checks default patterns first, then learned patterns
    */
   getMatchedPattern(error: unknown): ErrorPattern | null {
     if (!error || typeof error !== 'object') {
@@ -264,8 +215,31 @@ export class ErrorPatternRegistry {
     // Combine all text sources for matching
     const allText = [responseBody, message, name, statusCode].join(' ').toLowerCase();
 
-    // Check each pattern
+    // Check each pattern in default patterns first
     for (const pattern of this.patterns) {
+      for (const patternStr of pattern.patterns) {
+        let match = false;
+
+        if (typeof patternStr === 'string') {
+          // String matching (case-insensitive)
+          if (allText.includes(patternStr.toLowerCase())) {
+            match = true;
+          }
+        } else if (patternStr instanceof RegExp) {
+          // RegExp matching
+          if (patternStr.test(allText)) {
+            match = true;
+          }
+        }
+
+        if (match) {
+          return pattern;
+        }
+      }
+    }
+
+    // Check learned patterns
+    for (const pattern of this.learnedPatterns) {
       for (const patternStr of pattern.patterns) {
         let match = false;
 
@@ -291,10 +265,10 @@ export class ErrorPatternRegistry {
   }
 
   /**
-   * Get all registered patterns
+   * Get all registered patterns (including learned patterns)
    */
   getAllPatterns(): ErrorPattern[] {
-    return [...this.patterns];
+    return [...this.patterns, ...this.learnedPatterns];
   }
 
   /**
@@ -339,110 +313,13 @@ export class ErrorPatternRegistry {
   }
 
   /**
-   * Learn a new pattern from an error
-   */
-  addLearnedPattern(error: unknown): void {
-    if (this.patternLearner) {
-      this.patternLearner.learnFromError(error);
-    } else {
-      this.logger.warn('[ErrorPatternRegistry] Pattern learning is not enabled. Patterns must be manually registered via configuration.');
-    }
-  }
-
-  /**
-   * Learn a new pattern from an error (async version)
-   */
-  async addLearnedPatternAsync(error: unknown): Promise<void> {
-    if (this.patternLearner) {
-      this.patternLearner.learnFromError(error);
-    } else {
-      this.logger.warn('[ErrorPatternRegistry] Pattern learning is not enabled. Patterns must be manually registered via configuration.');
-    }
-  }
-
-  /**
-   * Get all learned patterns
-   */
-  getLearnedPatterns(): LearnedPattern[] {
-    if (!this.patternLearner) {
-      return [];
-    }
-    return this.patternLearner.getLearnedPatterns();
-  }
-
-  /**
-   * Get a learned pattern by name
-   */
-  getLearnedPatternByName(name: string): LearnedPattern | undefined {
-    if (!this.patternLearner) {
-      return undefined;
-    }
-    return this.patternLearner.getLearnedPatternByName(name);
-  }
-
-  /**
-   * Remove a learned pattern by name
-   */
-  async removeLearnedPattern(name: string): Promise<boolean> {
-    if (!this.patternLearner) {
-      return false;
-    }
-
-    const removed = await this.patternLearner.removeLearnedPattern(name);
-    if (removed) {
-      this.removePattern(name);
-    }
-    return removed;
-  }
-
-  /**
-   * Merge duplicate learned patterns
-   */
-  async mergeDuplicatePatterns(): Promise<number> {
-    if (!this.patternLearner) {
-      return 0;
-    }
-
-    const mergedCount = await this.patternLearner.mergeDuplicatePatterns();
-    if (mergedCount > 0) {
-      this.reloadLearnedPatterns();
-    }
-    return mergedCount;
-  }
-
-  /**
-   * Cleanup old learned patterns
-   */
-  async cleanupOldPatterns(): Promise<number> {
-    if (!this.patternLearner) {
-      return 0;
-    }
-
-    const removedCount = await this.patternLearner.cleanupOldPatterns();
-    if (removedCount > 0) {
-      this.reloadLearnedPatterns();
-    }
-    return removedCount;
-  }
-
-  /**
-   * Get learning statistics
-   */
-  getLearningStats(): { trackedPatterns: number; learnedPatterns: number; pendingPatterns: number } | null {
-    if (!this.patternLearner) {
-      return null;
-    }
-    return this.patternLearner.getStats();
-  }
-
-  /**
    * Get statistics about registered patterns
    */
-  getStats(): { total: number; byProvider: Record<string, number>; byPriority: Record<string, number> } {
+  getStats(): { total: number; default: number; learned: number; byProvider: Record<string, number>; byPriority: Record<string, number> } {
     const byProvider: Record<string, number> = {};
     const byPriority: Record<string, number> = {};
 
-    for (const pattern of this.patterns) {
+    for (const pattern of [...this.patterns, ...this.learnedPatterns]) {
       // Count by provider
       const provider = pattern.provider || 'generic';
       byProvider[provider] = (byProvider[provider] || 0) + 1;
@@ -453,7 +330,9 @@ export class ErrorPatternRegistry {
     }
 
     return {
-      total: this.patterns.length,
+      total: this.patterns.length + this.learnedPatterns.length,
+      default: this.patterns.length,
+      learned: this.learnedPatterns.length,
       byProvider,
       byPriority,
     };

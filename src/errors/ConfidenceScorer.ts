@@ -1,141 +1,138 @@
 /**
- * Confidence Scoring for Learned Patterns
+ * Confidence Scorer for calculating confidence scores for learned patterns
  */
 
-import type { PatternCandidate, ErrorPattern, LearningConfig } from '../types/index.js';
+import type { ErrorPattern, LearnedPattern, PatternLearningConfig } from '../types/index.js';
 import { calculateJaccardSimilarity } from '../utils/similarity.js';
 
 /**
- * Weight for each confidence component
- */
-const FREQUENCY_WEIGHT = 0.5;
-const SIMILARITY_WEIGHT = 0.3;
-const RECENCY_WEIGHT = 0.2;
-
-/**
- * Common rate limit words for similarity calculation
- */
-const RATE_LIMIT_KEYWORDS = [
-  'rate', 'limit', 'quota', 'exceeded', 'too', 'many', 'requests',
-  '429', '429', 'exhausted', 'resource', 'daily', 'monthly', 'maximum',
-  'insufficient', 'per', 'minute', 'second', 'request',
-];
-
-/**
- * ConfidenceScorer - Calculates confidence scores for learned patterns
+ * Confidence Scorer class
+ * Calculates confidence scores for learned patterns
  */
 export class ConfidenceScorer {
-  constructor(
-    private config: LearningConfig,
-    private knownPatterns: ErrorPattern[]
-  ) {}
+  private config: PatternLearningConfig;
 
   /**
-   * Calculate overall confidence score for a pattern
-   * @param pattern - The pattern candidate to score
-   * @param sampleCount - Number of times this pattern was seen
-   * @param learnedAt - Timestamp when pattern was first learned
-   * @returns Confidence score between 0 and 1
+   * Constructor
    */
-  calculateScore(pattern: PatternCandidate, sampleCount: number, learnedAt?: number): number {
-    const frequencyScore = this.calculateFrequencyScore(sampleCount, this.config.minErrorFrequency);
-    const similarityScore = this.calculateSimilarityScore(pattern);
-    const recencyScore = learnedAt ? this.calculateRecencyScore(learnedAt) : 0.5;
-
-    // Weighted average
-    const confidence = (frequencyScore * FREQUENCY_WEIGHT) +
-                      (similarityScore * SIMILARITY_WEIGHT) +
-                      (recencyScore * RECENCY_WEIGHT);
-
-    // Clamp to [0, 1]
-    return Math.max(0, Math.min(1, confidence));
+  constructor(config: PatternLearningConfig) {
+    this.config = config;
   }
 
   /**
-   * Calculate frequency score based on how often the pattern occurs
-   * @param count - Number of times pattern was seen
-   * @param window - Learning window size
-   * @returns Score between 0 and 1
+   * Update configuration
    */
-  calculateFrequencyScore(count: number, minFrequency: number): number {
-    if (count <= 0) {
-      return 0;
-    }
-
-    // Normalize against minimum frequency threshold
-    // Patterns seen at least minFrequency times get baseline score
-    // More frequent patterns get higher scores
-    const normalized = Math.min(count / (minFrequency * 2), 1);
-
-    // Boost score for patterns seen at least minFrequency times
-    const baseline = count >= minFrequency ? 0.5 : 0;
-
-    return Math.max(0, Math.min(1, baseline + normalized * 0.5));
+  updateConfig(config: PatternLearningConfig): void {
+    this.config = config;
   }
 
   /**
-   * Calculate similarity score based on how well pattern matches known patterns
-   * @param pattern - Pattern candidate to evaluate
-   * @returns Score between 0 and 1
+   * Calculate frequency score (50% weight)
    */
-  calculateSimilarityScore(pattern: PatternCandidate): number {
-    if (pattern.patterns.length === 0) {
-      return 0;
+  private calculateFrequencyScore(frequency: number): number {
+    return Math.min(1, frequency / this.config.minErrorFrequency);
+  }
+
+  /**
+   * Calculate similarity score (30% weight)
+   */
+  private calculateSimilarityScore(pattern: ErrorPattern, existingPatterns: ErrorPattern[]): number {
+    if (existingPatterns.length === 0) {
+      return 1; // No existing patterns, so new pattern is novel
     }
 
-    // Calculate keyword overlap with known rate limit patterns
-    const patternText = pattern.patterns.join(' ').toLowerCase();
-    const keywordsFound = RATE_LIMIT_KEYWORDS.filter(keyword => patternText.includes(keyword));
+    // Find the maximum similarity to any existing pattern
+    let maxSimilarity = 0;
+    for (const existing of existingPatterns) {
+      // Compare patterns
+      const patternStr = pattern.patterns.map(p => String(p)).join(' ');
+      const existingStr = existing.patterns.map(p => String(p)).join(' ');
 
-    // Base score from keyword matching
-    const keywordScore = keywordsFound.length / RATE_LIMIT_KEYWORDS.length;
-
-    // Bonus for patterns that match known patterns
-    let knownPatternBonus = 0;
-    if (this.knownPatterns.length > 0) {
-      for (const known of this.knownPatterns) {
-        for (const knownPatternStr of known.patterns) {
-          const knownText = typeof knownPatternStr === 'string' ? knownPatternStr : knownPatternStr.source;
-          const similarity = calculateJaccardSimilarity(patternText, knownText.toLowerCase());
-          knownPatternBonus = Math.max(knownPatternBonus, similarity);
-        }
+      const similarity = calculateJaccardSimilarity(patternStr, existingStr);
+      if (similarity > maxSimilarity) {
+        maxSimilarity = similarity;
       }
     }
 
-    // Combine scores
-    return Math.max(0, Math.min(1, (keywordScore * 0.5) + (knownPatternBonus * 0.5)));
+    // Return 1 - maxSimilarity (lower similarity to existing patterns = higher score)
+    return 1 - maxSimilarity;
   }
 
   /**
-   * Calculate recency score based on when pattern was first learned
-   * @param learnedAt - Timestamp when pattern was learned
-   * @returns Score between 0 and 1
+   * Calculate recency score (20% weight)
    */
-  calculateRecencyScore(learnedAt: number): number {
-    const now = Date.now();
-    const age = now - learnedAt;
-
-    // Learning window in milliseconds
-    const window = this.config.learningWindowMs;
-
-    // Recent patterns (within window) get higher scores
-    if (age <= window) {
-      return 1;
-    }
-
-    // Older patterns get decaying score
-    // Score decays over time, but never goes to 0
-    const decayFactor = Math.exp(-age / (window * 10));
-
-    return Math.max(0.3, decayFactor);
+  private calculateRecencyScore(firstSeen: number): number {
+    const timeSinceFirst = Date.now() - firstSeen;
+    return 1 - Math.min(1, timeSinceFirst / this.config.learningWindowMs);
   }
 
   /**
-   * Check if pattern meets auto-approve threshold
-   * @param confidence - Confidence score
-   * @returns True if pattern should be auto-approved
+   * Calculate overall confidence score
+   */
+  calculateConfidence(
+    pattern: ErrorPattern,
+    frequency: number,
+    firstSeen: number,
+    existingPatterns: ErrorPattern[] = []
+  ): number {
+    const frequencyScore = this.calculateFrequencyScore(frequency);
+    const similarityScore = this.calculateSimilarityScore(pattern, existingPatterns);
+    const recencyScore = this.calculateRecencyScore(firstSeen);
+
+    // Weighted combination
+    const confidence =
+      frequencyScore * 0.5 +
+      similarityScore * 0.3 +
+      recencyScore * 0.2;
+
+    return Math.round(confidence * 100) / 100; // Round to 2 decimal places
+  }
+
+  /**
+   * Check if a pattern should be auto-approved
    */
   shouldAutoApprove(confidence: number): boolean {
     return confidence >= this.config.autoApproveThreshold;
+  }
+
+  /**
+   * Get confidence level category
+   */
+  getConfidenceLevel(confidence: number): 'high' | 'medium' | 'low' {
+    if (confidence >= 0.8) return 'high';
+    if (confidence >= 0.5) return 'medium';
+    return 'low';
+  }
+
+  /**
+   * Calculate pattern statistics
+   */
+  calculatePatternStats(patterns: LearnedPattern[]): {
+    totalPatterns: number;
+    avgConfidence: number;
+    confidenceDistribution: { high: number; medium: number; low: number };
+  } {
+    if (patterns.length === 0) {
+      return {
+        totalPatterns: 0,
+        avgConfidence: 0,
+        confidenceDistribution: { high: 0, medium: 0, low: 0 },
+      };
+    }
+
+    let totalConfidence = 0;
+    const distribution = { high: 0, medium: 0, low: 0 };
+
+    for (const pattern of patterns) {
+      totalConfidence += pattern.confidence;
+      const level = this.getConfidenceLevel(pattern.confidence);
+      distribution[level]++;
+    }
+
+    return {
+      totalPatterns: patterns.length,
+      avgConfidence: Math.round((totalConfidence / patterns.length) * 100) / 100,
+      confidenceDistribution: distribution,
+    };
   }
 }

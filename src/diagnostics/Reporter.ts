@@ -4,7 +4,7 @@
  */
 
 import { Logger } from '../../logger.js';
-import type { PluginConfig, ModelHealth } from '../types/index.js';
+import type { PluginConfig, ModelHealth, LearnedPattern } from '../types/index.js';
 import type { HealthTracker } from '../health/HealthTracker.js';
 import type { CircuitBreaker } from '../circuitbreaker/index.js';
 import { ErrorPatternRegistry } from '../errors/PatternRegistry.js';
@@ -59,9 +59,12 @@ export interface DiagnosticReport {
   errorPatterns: {
     stats: {
       total: number;
+      default: number;
+      learned: number;
       byProvider: Record<string, number>;
       byPriority: Record<string, number>;
     };
+    learnedPatterns: LearnedPattern[];
   };
   circuitBreaker: {
     enabled: boolean;
@@ -161,6 +164,7 @@ export class DiagnosticReporter {
   private generateErrorPatternsReport() {
     return {
       stats: this.errorPatternRegistry.getStats(),
+      learnedPatterns: this.errorPatternRegistry.getLearnedPatterns(),
     };
   }
 
@@ -308,6 +312,8 @@ export class DiagnosticReporter {
     lines.push('-'.repeat(70));
     const patternStats = report.errorPatterns.stats;
     lines.push(`Total Patterns: ${patternStats.total}`);
+    lines.push(`Default Patterns: ${patternStats.default || 0}`);
+    lines.push(`Learned Patterns: ${patternStats.learned || 0}`);
     lines.push('');
 
     if (Object.keys(patternStats.byProvider).length > 0) {
@@ -324,6 +330,20 @@ export class DiagnosticReporter {
         lines.push(`  ${priority}: ${count} patterns`);
       }
       lines.push('');
+    }
+
+    // Display learned patterns details
+    if (report.errorPatterns.learnedPatterns.length > 0) {
+      lines.push('LEARNED PATTERNS:');
+      for (const pattern of report.errorPatterns.learnedPatterns.sort((a, b) => b.confidence - a.confidence)) {
+        lines.push(`  Name: ${pattern.name}`);
+        lines.push(`    Provider: ${pattern.provider || 'generic'}`);
+        lines.push(`    Confidence: ${(pattern.confidence * 100).toFixed(1)}%`);
+        lines.push(`    Sample Count: ${pattern.sampleCount}`);
+        lines.push(`    Learned At: ${pattern.learnedAt}`);
+        lines.push(`    Patterns: ${pattern.patterns.map(p => typeof p === 'string' ? `"${p}"` : p.toString()).join(', ')}`);
+        lines.push('');
+      }
     }
 
     // Circuit breaker section

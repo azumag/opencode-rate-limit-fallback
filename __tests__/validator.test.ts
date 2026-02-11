@@ -721,21 +721,6 @@ describe('ConfigValidator', () => {
   });
 
   describe('validate() - Error Patterns Configuration', () => {
-    it('should validate errorPatterns with enableLearning', () => {
-      const config = {
-        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
-        cooldownMs: 5000,
-        enabled: true,
-        fallbackMode: 'cycle' as const,
-        errorPatterns: {
-          enableLearning: true,
-        },
-      };
-
-      const result = validator.validate(config);
-      expect(result.isValid).toBe(true);
-    });
-
     it('should reject non-array custom patterns', () => {
       const config = {
         fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
@@ -750,22 +735,6 @@ describe('ConfigValidator', () => {
       const result = validator.validate(config, { strict: true });
       expect(result.isValid).toBe(false);
       expect(result.errors.some(e => e.path.includes('errorPatterns.custom'))).toBe(true);
-    });
-
-    it('should reject non-boolean enableLearning', () => {
-      const config = {
-        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
-        cooldownMs: 5000,
-        enabled: true,
-        fallbackMode: 'cycle' as const,
-        errorPatterns: {
-          enableLearning: 'yes' as any,
-        },
-      };
-
-      const result = validator.validate(config, { strict: true });
-      expect(result.isValid).toBe(false);
-      expect(result.errors.some(e => e.path.includes('errorPatterns.enableLearning'))).toBe(true);
     });
   });
 

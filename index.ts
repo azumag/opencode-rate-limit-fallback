@@ -199,6 +199,19 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
     errorPatternRegistry.registerMany(config.errorPatterns.custom);
   }
 
+  // Initialize pattern learning if enabled
+  if (config.errorPatterns?.enableLearning && configSource) {
+    const patternLearningConfig = {
+      enabled: config.errorPatterns.enableLearning,
+      autoApproveThreshold: config.errorPatterns.autoApproveThreshold ?? 0.8,
+      maxLearnedPatterns: config.errorPatterns.maxLearnedPatterns ?? 20,
+      minErrorFrequency: config.errorPatterns.minErrorFrequency ?? 3,
+      learningWindowMs: config.errorPatterns.learningWindowMs ?? 86400000,
+    };
+    errorPatternRegistry.initializePatternLearning(patternLearningConfig, configSource);
+    logger.info('Pattern learning enabled');
+  }
+
   // Initialize health tracker
   let healthTracker: HealthTracker | undefined;
   if (config.enableHealthBasedSelection) {
@@ -234,6 +247,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
     const componentRefs: ComponentRefs = {
       fallbackHandler,
       metricsManager,
+      errorPatternRegistry,
     };
 
     const configReloader = new ConfigReloader(
@@ -283,6 +297,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       if (isSessionErrorEvent(event)) {
         const { sessionID, error } = event.properties;
         if (sessionID && error && errorPatternRegistry.isRateLimitError(error)) {
+          // Learn from this error if pattern learning is enabled
+          const patternLearner = errorPatternRegistry.getPatternLearner();
+          if (patternLearner) {
+            patternLearner.processError(error).catch((err) => {
+              logger.debug('Pattern learning failed', { error: err });
+            });
+          }
           await fallbackHandler.handleRateLimitFallback(sessionID, "", "");
         }
       }
@@ -291,6 +312,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       if (isMessageUpdatedEvent(event)) {
         const info = event.properties.info;
         if (info?.error && errorPatternRegistry.isRateLimitError(info.error)) {
+          // Learn from this error if pattern learning is enabled
+          const patternLearner = errorPatternRegistry.getPatternLearner();
+          if (patternLearner) {
+            patternLearner.processError(info.error).catch((err) => {
+              logger.debug('Pattern learning failed', { error: err });
+            });
+          }
           await fallbackHandler.handleRateLimitFallback(info.sessionID, info.providerID || "", info.modelID || "");
         } else if (info?.status === "completed" && !info?.error && info?.id) {
           // Record fallback success

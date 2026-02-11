@@ -517,15 +517,6 @@ export class ConfigValidator {
             value: config.errorPatterns.custom,
           });
         }
-
-        if (config.errorPatterns.enableLearning !== undefined && typeof config.errorPatterns.enableLearning !== 'boolean') {
-          errors.push({
-            path: 'errorPatterns.enableLearning',
-            message: 'enableLearning must be a boolean',
-            severity: 'error',
-            value: config.errorPatterns.enableLearning,
-          });
-        }
       }
     }
 

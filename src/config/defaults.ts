@@ -138,16 +138,28 @@ export const DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG = {
 } as const;
 
 // ============================================================================
-// Error Pattern Learning Defaults
+// Error Pattern Configuration Defaults
 // ============================================================================
 
 /**
- * Default error pattern learning configuration
+ * Default pattern learning configuration
  */
-export const DEFAULT_ERROR_PATTERN_LEARNING_CONFIG = {
+export const DEFAULT_PATTERN_LEARNING_CONFIG = {
+  enabled: false,
+  autoApproveThreshold: 0.8,
+  maxLearnedPatterns: 20,
+  minErrorFrequency: 3,
+  learningWindowMs: 86400000, // 24 hours
+} as const;
+
+/**
+ * Default error pattern configuration
+ */
+export const DEFAULT_ERROR_PATTERNS_CONFIG = {
+  custom: undefined,
   enableLearning: false,
   autoApproveThreshold: 0.8,
   maxLearnedPatterns: 20,
   minErrorFrequency: 3,
-  learningWindowMs: 24 * 60 * 60 * 1000, // 24 hours
+  learningWindowMs: 86400000,
 } as const;

@@ -4,9 +4,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    exclude: ['node_modules/', 'dist/', 'tmp/', '**/*.config.*', '**/*.d.ts'],
     coverage: {
       reporter: ['text', 'json', 'html'],
-      exclude: ['node_modules/', 'dist/', '**/*.config.*', '**/*.d.ts'],
+      exclude: ['node_modules/', 'dist/', 'tmp/', '**/*.config.*', '**/*.d.ts'],
     },
   },
 });

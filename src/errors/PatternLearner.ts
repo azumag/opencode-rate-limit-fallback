@@ -1,321 +1,248 @@
 /**
- * Pattern Learning from Rate Limit Errors
+ * Pattern Learner for orchestrating error pattern learning
  */
 
-import type { PatternCandidate, LearnedPattern, LearningConfig } from '../types/index.js';
-import type { Logger } from '../../logger.js';
+import type { ErrorPattern, LearnedPattern, PatternLearningConfig, PatternCandidate } from '../types/index.js';
 import { PatternExtractor } from './PatternExtractor.js';
 import { ConfidenceScorer } from './ConfidenceScorer.js';
 import { PatternStorage } from './PatternStorage.js';
+import type { Logger } from '../../logger.js';
 
 /**
- * Pattern tracking for error frequency
+ * Pattern tracking information
  */
-interface PatternTracker {
-  pattern: PatternCandidate;
+interface PatternTracking {
+  pattern: ErrorPattern;
+  frequency: number;
   firstSeen: number;
-  lastSeen: number;
-  count: number;
   samples: string[];
 }
 
 /**
- * PatternLearner - Orchestrates the learning process from errors
+ * Pattern Learner class
+ * Orchestrates the learning process
  */
 export class PatternLearner {
-  private patternTracker: Map<string, PatternTracker> = new Map();
-  private learnedPatterns: Map<string, LearnedPattern> = new Map();
+  private extractor: PatternExtractor;
+  private scorer: ConfidenceScorer;
+  private storage: PatternStorage;
+  private config: PatternLearningConfig;
+  private logger: Logger;
 
-  constructor(
-    private extractor: PatternExtractor,
-    private scorer: ConfidenceScorer,
-    private storage: PatternStorage,
-    private config: LearningConfig,
-    private logger: Logger
-  ) {
-    // Note: Patterns will be loaded asynchronously via loadLearnedPatterns()
+  // Track patterns being learned
+  private patternTracking: Map<string, PatternTracking>;
+
+  // Statistics
+  private stats = {
+    totalErrorsProcessed: 0,
+    patternsLearned: 0,
+    patternsRejected: 0,
+  };
+
+  /**
+   * Constructor
+   */
+  constructor(config: PatternLearningConfig, logger?: Logger) {
+    this.config = config;
+    this.extractor = new PatternExtractor();
+    this.scorer = new ConfidenceScorer(config);
+    this.storage = new PatternStorage(config);
+    this.patternTracking = new Map();
+
+    this.logger = logger || {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    } as unknown as Logger;
   }
 
   /**
-   * Learn from a rate limit error
+   * Update configuration
    */
-  learnFromError(error: unknown): void {
+  updateConfig(config: PatternLearningConfig): void {
+    this.config = config;
+    this.scorer.updateConfig(config);
+    this.storage.updateConfig(config);
+  }
+
+  /**
+   * Set the config file path for storage
+   */
+  setConfigFilePath(path: string): void {
+    this.storage.setConfigFilePath(path);
+  }
+
+  /**
+   * Process an error and learn from it
+   */
+  async processError(error: unknown): Promise<LearnedPattern | null> {
     if (!this.config.enabled) {
-      return;
-    }
-
-    try {
-      // Extract pattern candidates
-      const candidates = this.extractor.extractPatterns(error);
-
-      for (const candidate of candidates) {
-        this.trackPattern(candidate);
-      }
-
-      // Process and potentially save patterns
-      // Fire-and-forget with proper error handling
-      this.processPatterns().catch((error) => {
-        this.logger.error('[PatternLearner] Failed to process patterns', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    } catch (error) {
-      this.logger.error('[PatternLearner] Failed to learn from error', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  /**
-   * Track a pattern candidate for learning
-   */
-  private trackPattern(candidate: PatternCandidate): void {
-    // Generate a key for this pattern
-    const key = this.generatePatternKey(candidate);
-
-    const existing = this.patternTracker.get(key);
-
-    if (existing) {
-      // Update existing tracker
-      existing.lastSeen = Date.now();
-      existing.count++;
-      existing.samples.push(candidate.sourceError);
-      // Keep only last 10 samples
-      if (existing.samples.length > 10) {
-        existing.samples.shift();
-      }
-    } else {
-      // Create new tracker
-      this.patternTracker.set(key, {
-        pattern: candidate,
-        firstSeen: Date.now(),
-        lastSeen: Date.now(),
-        count: 1,
-        samples: [candidate.sourceError],
-      });
-    }
-  }
-
-  /**
-   * Process tracked patterns and save those meeting criteria
-   */
-  private async processPatterns(): Promise<void> {
-    for (const [key, tracker] of this.patternTracker.entries()) {
-      // Check if pattern meets frequency threshold
-      if (tracker.count < this.config.minErrorFrequency) {
-        continue;
-      }
-
-      // Check if pattern already exists in learned patterns
-      if (this.learnedPatterns.has(key)) {
-        continue;
-      }
-
-      // Calculate confidence score
-      const confidence = this.scorer.calculateScore(
-        tracker.pattern,
-        tracker.count,
-        tracker.firstSeen
-      );
-
-      // Check if pattern meets auto-approve threshold
-      if (!this.scorer.shouldAutoApprove(confidence)) {
-        this.logger.debug(`[PatternLearner] Pattern confidence ${confidence.toFixed(2)} below threshold ${this.config.autoApproveThreshold}, not auto-approving`);
-        continue;
-      }
-
-      // Create learned pattern
-      const learnedPattern: LearnedPattern = {
-        name: this.generatePatternName(tracker.pattern),
-        provider: tracker.pattern.provider,
-        patterns: tracker.pattern.patterns,
-        priority: this.calculatePriority(tracker.pattern, confidence),
-        confidence,
-        learnedAt: new Date(tracker.firstSeen).toISOString(),
-        sampleCount: tracker.count,
-        lastUsed: undefined,
-      };
-
-      // Save to storage
-      await this.storage.savePattern(learnedPattern);
-
-      // Add to learned patterns
-      this.learnedPatterns.set(key, learnedPattern);
-
-      // Remove from tracker
-      this.patternTracker.delete(key);
-
-      this.logger.info(`[PatternLearner] Learned new pattern: ${learnedPattern.name} (confidence: ${confidence.toFixed(2)})`);
-    }
-  }
-
-  /**
-   * Merge similar patterns
-   */
-  mergePatterns(patterns: PatternCandidate[]): PatternCandidate | null {
-    if (patterns.length === 0) {
+      this.logger.debug('Pattern learning is disabled, skipping');
       return null;
     }
 
-    if (patterns.length === 1) {
-      return patterns[0];
+    this.stats.totalErrorsProcessed++;
+
+    // Extract pattern from error
+    const candidate = this.extractor.extractPattern(error);
+    if (!candidate) {
+      return null;
     }
 
-    // Merge all patterns into one
-    const mergedPattern: PatternCandidate = {
-      provider: patterns[0].provider,
-      patterns: patterns.flatMap(p => p.patterns),
-      sourceError: patterns.map(p => p.sourceError).join('; '),
-      extractedAt: Math.max(...patterns.map(p => p.extractedAt)),
-    };
+    // Check if provider is present (required for meaningful patterns)
+    if (!candidate.provider) {
+      this.logger.debug('No provider found in error, skipping pattern learning');
+      return null;
+    }
 
-    // Deduplicate patterns
-    mergedPattern.patterns = [...new Set(mergedPattern.patterns)];
+    // Create a pattern key for tracking
+    const patternKey = this.createPatternKey(candidate);
 
-    return mergedPattern;
+    // Update pattern tracking
+    const tracking = this.getOrCreateTracking(candidate, patternKey);
+    tracking.frequency++;
+    tracking.samples.push(candidate.rawText);
+
+    // Check if we should learn this pattern
+    if (tracking.frequency < this.config.minErrorFrequency) {
+      return null; // Not enough samples yet
+    }
+
+    // Calculate confidence
+    const confidence = this.scorer.calculateConfidence(
+      tracking.pattern,
+      tracking.frequency,
+      tracking.firstSeen,
+      []
+    );
+
+    // Check if we should learn and save this pattern
+    if (!this.scorer.shouldAutoApprove(confidence)) {
+      this.stats.patternsRejected++;
+      this.logger.debug(`Pattern confidence ${confidence} below threshold ${this.config.autoApproveThreshold}`);
+      return null;
+    }
+
+    // Create learned pattern
+    const learnedPattern = this.storage.createLearnedPattern(
+      tracking.pattern,
+      confidence,
+      tracking.frequency
+    );
+
+    // Save to storage
+    await this.saveLearnedPattern(learnedPattern);
+
+    // Clear tracking for this pattern
+    this.patternTracking.delete(patternKey);
+
+    this.stats.patternsLearned++;
+    this.logger.info(`Learned new pattern: ${learnedPattern.name} with confidence ${confidence}`);
+
+    return learnedPattern;
   }
 
   /**
    * Load learned patterns from storage
    */
-  async loadLearnedPatterns(): Promise<void> {
-    try {
-      const patterns = await this.storage.loadPatterns();
-      for (const pattern of patterns) {
-        const key = this.generatePatternKeyFromLearned(pattern);
-        this.learnedPatterns.set(key, pattern);
-      }
-
-      this.logger.info(`[PatternLearner] Loaded ${patterns.length} learned patterns`);
-    } catch (error) {
-      this.logger.error('[PatternLearner] Failed to load learned patterns', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  async loadLearnedPatterns(): Promise<LearnedPattern[]> {
+    const patterns = await this.storage.loadLearnedPatterns();
+    this.logger.debug(`Loaded ${patterns.length} learned patterns`);
+    return patterns;
   }
 
   /**
-   * Get all learned patterns
+   * Save learned patterns
    */
-  getLearnedPatterns(): LearnedPattern[] {
-    return Array.from(this.learnedPatterns.values());
+  async saveLearnedPatterns(patterns: LearnedPattern[]): Promise<void> {
+    const merged = this.storage.mergeSimilarPatterns(patterns);
+    const cleaned = this.storage.cleanupPatterns(merged);
+    await this.storage.saveLearnedPatterns(cleaned);
+    this.logger.debug(`Saved ${cleaned.length} learned patterns`);
   }
 
   /**
-   * Get learned patterns for a specific provider
+   * Get statistics
    */
-  getLearnedPatternsForProvider(provider: string): LearnedPattern[] {
-    return this.getLearnedPatterns().filter(p => !p.provider || p.provider === provider);
+  getStats(): typeof PatternLearner.prototype.stats {
+    return { ...this.stats };
   }
 
   /**
-   * Add a learned pattern manually
+   * Reset statistics
    */
-  async addLearnedPattern(pattern: LearnedPattern): Promise<void> {
-    const key = this.generatePatternKeyFromLearned(pattern);
-    this.learnedPatterns.set(key, pattern);
-    await this.storage.savePattern(pattern);
-  }
-
-  /**
-   * Remove a learned pattern
-   */
-  async removeLearnedPattern(name: string): Promise<boolean> {
-    const pattern = this.getLearnedPatternByName(name);
-    if (pattern) {
-      const key = this.generatePatternKeyFromLearned(pattern);
-      this.learnedPatterns.delete(key);
-      await this.storage.deletePattern(name);
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * Get a learned pattern by name
-   */
-  getLearnedPatternByName(name: string): LearnedPattern | undefined {
-    return this.getLearnedPatterns().find(p => p.name === name);
-  }
-
-  /**
-   * Generate a unique key for a pattern candidate
-   */
-  private generatePatternKey(pattern: PatternCandidate): string {
-    const provider = pattern.provider || 'generic';
-    const patternStr = pattern.patterns.map(p => typeof p === 'string' ? p : p.source).join('|');
-    return `${provider}:${patternStr}`;
-  }
-
-  /**
-   * Generate a unique key for a learned pattern
-   */
-  private generatePatternKeyFromLearned(pattern: LearnedPattern): string {
-    const provider = pattern.provider || 'generic';
-    const patternStr = pattern.patterns.map(p => typeof p === 'string' ? p : p.source).join('|');
-    return `${provider}:${patternStr}`;
-  }
-
-  /**
-   * Generate a name for a pattern
-   */
-  private generatePatternName(pattern: PatternCandidate): string {
-    const provider = pattern.provider || 'generic';
-    const timestamp = Date.now();
-    return `learned-${provider}-${timestamp}`;
-  }
-
-  /**
-   * Calculate priority for a learned pattern
-   */
-  private calculatePriority(pattern: PatternCandidate, confidence: number): number {
-    // Base priority on confidence
-    const basePriority = Math.floor(confidence * 50);
-
-    // Add bonus for provider-specific patterns
-    const providerBonus = pattern.provider ? 10 : 0;
-
-    // Add bonus for number of patterns
-    const patternCountBonus = Math.min(pattern.patterns.length * 2, 10);
-
-    return Math.max(1, Math.min(100, basePriority + providerBonus + patternCountBonus));
-  }
-
-  /**
-   * Merge duplicate patterns in storage
-   */
-  async mergeDuplicatePatterns(): Promise<number> {
-    return this.storage.mergeDuplicatePatterns();
-  }
-
-  /**
-   * Cleanup old patterns
-   */
-  async cleanupOldPatterns(): Promise<number> {
-    const maxPatterns = this.config.maxLearnedPatterns;
-    return this.storage.cleanupOldPatterns(maxPatterns);
-  }
-
-  /**
-   * Clear all tracked patterns
-   */
-  clearTrackedPatterns(): void {
-    this.patternTracker.clear();
-  }
-
-  /**
-   * Get statistics about learning
-   */
-  getStats(): {
-    trackedPatterns: number;
-    learnedPatterns: number;
-    pendingPatterns: number;
-  } {
-    return {
-      trackedPatterns: this.patternTracker.size,
-      learnedPatterns: this.learnedPatterns.size,
-      pendingPatterns: Array.from(this.patternTracker.values())
-        .filter(t => t.count >= this.config.minErrorFrequency).length,
+  resetStats(): void {
+    this.stats = {
+      totalErrorsProcessed: 0,
+      patternsLearned: 0,
+      patternsRejected: 0,
     };
+  }
+
+  /**
+   * Clear all pattern tracking
+   */
+  clearTracking(): void {
+    this.patternTracking.clear();
+  }
+
+  /**
+   * Create a pattern key for tracking
+   */
+  private createPatternKey(candidate: PatternCandidate): string {
+    const parts = [
+      candidate.provider || 'unknown',
+      candidate.statusCode || 'no-status',
+      ...candidate.phrases.slice(0, 3), // Use first 3 phrases for key
+    ].join('|');
+    return parts;
+  }
+
+  /**
+   * Get or create pattern tracking
+   */
+  private getOrCreateTracking(candidate: PatternCandidate, patternKey: string): PatternTracking {
+    if (this.patternTracking.has(patternKey)) {
+      return this.patternTracking.get(patternKey)!;
+    }
+
+    // Create pattern from candidate
+    const allPatterns = [
+      ...candidate.phrases,
+      ...candidate.errorCodes,
+      ...(candidate.statusCode ? [candidate.statusCode] : []),
+    ];
+
+    const pattern: ErrorPattern = {
+      name: `learned-${candidate.provider}-${Date.now()}`,
+      provider: candidate.provider || undefined,
+      patterns: allPatterns,
+      priority: 70, // Medium priority for learned patterns
+    };
+
+    const tracking: PatternTracking = {
+      pattern,
+      frequency: 0,
+      firstSeen: Date.now(),
+      samples: [],
+    };
+
+    this.patternTracking.set(patternKey, tracking);
+    return tracking;
+  }
+
+  /**
+   * Save a single learned pattern
+   */
+  private async saveLearnedPattern(pattern: LearnedPattern): Promise<void> {
+    // Load existing patterns
+    const existing = await this.storage.loadLearnedPatterns();
+
+    // Add new pattern
+    existing.push(pattern);
+
+    // Merge and clean up
+    await this.saveLearnedPatterns(existing);
   }
 }

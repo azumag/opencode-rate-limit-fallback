@@ -449,15 +449,7 @@ describe('ErrorPatternRegistry', () => {
     });
   });
 
-  describe('addLearnedPattern()', () => {
-    it('should log warning (not implemented)', () => {
-      const warnSpy = vi.spyOn(logger, 'warn');
-
-      registry.addLearnedPattern({ message: 'new error pattern' });
-
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[ErrorPatternRegistry] Pattern learning is not enabled. Patterns must be manually registered via configuration.'
-      );
-    });
-  });
+  // Note: Pattern learning functionality has been removed as it was experimental
+  // and not being used in production. Patterns can still be manually registered
+  // via configuration using the register() and registerMany() methods.
 });

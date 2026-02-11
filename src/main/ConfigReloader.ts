@@ -18,6 +18,10 @@ export interface ComponentRefs {
   metricsManager?: {
     updateConfig: (newConfig: PluginConfig) => void;
   };
+  errorPatternRegistry?: {
+    updateLearnedPatterns: (patterns: any[]) => void;
+    getPatternLearner: () => { updateConfig: (config: any) => void } | null;
+  };
 }
 
 /**
@@ -169,6 +173,25 @@ export class ConfigReloader {
 
     if (this.components.metricsManager) {
       this.components.metricsManager.updateConfig(newConfig);
+    }
+
+    // Reload learned patterns if errorPatterns config changed
+    if (this.components.errorPatternRegistry && newConfig.errorPatterns?.learnedPatterns) {
+      this.components.errorPatternRegistry.updateLearnedPatterns(newConfig.errorPatterns.learnedPatterns);
+      this.logger.info(`Reloaded ${newConfig.errorPatterns.learnedPatterns.length} learned patterns`);
+
+      // Update pattern learner config if it exists
+      const patternLearner = this.components.errorPatternRegistry.getPatternLearner();
+      if (patternLearner && newConfig.errorPatterns) {
+        const patternLearningConfig = {
+          enabled: newConfig.errorPatterns.enableLearning ?? false,
+          autoApproveThreshold: newConfig.errorPatterns.autoApproveThreshold ?? 0.8,
+          maxLearnedPatterns: newConfig.errorPatterns.maxLearnedPatterns ?? 20,
+          minErrorFrequency: newConfig.errorPatterns.minErrorFrequency ?? 3,
+          learningWindowMs: newConfig.errorPatterns.learningWindowMs ?? 86400000,
+        };
+        patternLearner.updateConfig(patternLearningConfig);
+      }
     }
 
     // Log configuration changes

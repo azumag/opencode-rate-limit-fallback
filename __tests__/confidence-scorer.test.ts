@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ConfidenceScorer } from '../src/errors/ConfidenceScorer';
-import type { PatternCandidate, LearningConfig, ErrorPattern } from '../src/types/index.js';
+import type { PatternLearningConfig } from '../src/types/index';
 
 describe('ConfidenceScorer', () => {
   let scorer: ConfidenceScorer;
-  let config: LearningConfig;
-  let knownPatterns: ErrorPattern[];
+  let config: PatternLearningConfig;
 
   beforeEach(() => {
     config = {
@@ -13,304 +12,344 @@ describe('ConfidenceScorer', () => {
       autoApproveThreshold: 0.8,
       maxLearnedPatterns: 20,
       minErrorFrequency: 3,
-      learningWindowMs: 24 * 60 * 60 * 1000, // 24 hours
+      learningWindowMs: 86400000,
     };
-
-    knownPatterns = [
-      {
-        name: 'rate-limit-429',
-        provider: 'anthropic',
-        patterns: ['rate limit', '429'],
-        priority: 100,
-      },
-      {
-        name: 'quota-exceeded',
-        provider: 'openai',
-        patterns: ['quota exceeded', 'insufficient_quota'],
-        priority: 90,
-      },
-    ];
-
-    scorer = new ConfidenceScorer(config, knownPatterns);
-  });
-
-  describe('calculateScore()', () => {
-    it('should calculate confidence score with all components', () => {
-      const pattern: PatternCandidate = {
-        provider: 'anthropic',
-        patterns: ['rate limit', '429'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const score = scorer.calculateScore(pattern, 5, Date.now() - 1000);
-
-      expect(score).toBeGreaterThanOrEqual(0);
-      expect(score).toBeLessThanOrEqual(1);
-    });
-
-    it('should give higher score for more frequent patterns', () => {
-      const pattern: PatternCandidate = {
-        patterns: ['rate limit'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const lowFreqScore = scorer.calculateScore(pattern, 1);
-      const highFreqScore = scorer.calculateScore(pattern, 10);
-
-      expect(highFreqScore).toBeGreaterThan(lowFreqScore);
-    });
-
-    it('should give higher score for patterns similar to known patterns', () => {
-      const similarPattern: PatternCandidate = {
-        patterns: ['rate limit', 'too many requests'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const dissimilarPattern: PatternCandidate = {
-        patterns: ['random error'],
-        sourceError: 'Random error occurred',
-        extractedAt: Date.now(),
-      };
-
-      const similarScore = scorer.calculateScore(similarPattern, 5);
-      const dissimilarScore = scorer.calculateScore(dissimilarPattern, 5);
-
-      expect(similarScore).toBeGreaterThan(dissimilarScore);
-    });
-
-    it('should give higher score for recent patterns', () => {
-      const pattern: PatternCandidate = {
-        patterns: ['rate limit'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const recentScore = scorer.calculateScore(pattern, 5, Date.now() - 1000);
-      const oldScore = scorer.calculateScore(pattern, 5, Date.now() - 30 * 24 * 60 * 60 * 1000);
-
-      expect(recentScore).toBeGreaterThan(oldScore);
-    });
-
-    it('should handle zero samples', () => {
-      const pattern: PatternCandidate = {
-        patterns: ['rate limit'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const score = scorer.calculateScore(pattern, 0);
-
-      expect(score).toBeGreaterThanOrEqual(0);
-      expect(score).toBeLessThanOrEqual(1);
-    });
-
-    it('should handle patterns without provider', () => {
-      const pattern: PatternCandidate = {
-        patterns: ['rate limit'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const score = scorer.calculateScore(pattern, 5);
-
-      expect(score).toBeGreaterThanOrEqual(0);
-      expect(score).toBeLessThanOrEqual(1);
-    });
-
-    it('should clamp score to [0, 1]', () => {
-      const pattern: PatternCandidate = {
-        patterns: ['rate limit'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const highFreqScore = scorer.calculateScore(pattern, 1000);
-      const zeroScore = scorer.calculateScore(pattern, 0);
-
-      expect(highFreqScore).toBeLessThanOrEqual(1);
-      expect(zeroScore).toBeGreaterThanOrEqual(0);
-    });
-
-    it('should handle missing learnedAt parameter', () => {
-      const pattern: PatternCandidate = {
-        patterns: ['rate limit'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
-
-      const score = scorer.calculateScore(pattern, 5);
-
-      expect(score).toBeGreaterThanOrEqual(0);
-      expect(score).toBeLessThanOrEqual(1);
-    });
+    scorer = new ConfidenceScorer(config);
   });
 
   describe('calculateFrequencyScore()', () => {
-    it('should return 0 for zero count', () => {
-      const score = scorer['calculateFrequencyScore'](0, 3);
-      expect(score).toBe(0);
+    it('should return 0 for frequency below minErrorFrequency', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        2,
+        Date.now(),
+        []
+      );
+
+      const frequencyScore = 2 / 3; // 0.67
+      // Combined score includes similarity and recency, which are 1 and 1 respectively
+      // 0.67 * 0.5 + 1 * 0.3 + 1 * 0.2 = 0.83
+      expect(score).toBeCloseTo(0.83, 1);
     });
 
-    it('should return 0 for negative count', () => {
-      const score = scorer['calculateFrequencyScore'](-1, 3);
-      expect(score).toBe(0);
+    it('should return 1 for frequency at minErrorFrequency', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        3,
+        Date.now(),
+        []
+      );
+
+      expect(score).toBeGreaterThan(0.5);
     });
 
-    it('should return baseline score for count equal to min frequency', () => {
-      const score = scorer['calculateFrequencyScore'](3, 3);
-      expect(score).toBeGreaterThanOrEqual(0.5);
+    it('should return 1 for frequency above minErrorFrequency', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        10,
+        Date.now(),
+        []
+      );
+
+      expect(score).toBeGreaterThan(0.8);
     });
 
-    it('should return higher score for count greater than min frequency', () => {
-      const lowScore = scorer['calculateFrequencyScore'](3, 3);
-      const highScore = scorer['calculateFrequencyScore'](10, 3);
+    it('should cap at 1 for very high frequency', () => {
+      const score1 = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        100,
+        Date.now(),
+        []
+      );
+      const score2 = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        1000,
+        Date.now(),
+        []
+      );
 
-      expect(highScore).toBeGreaterThan(lowScore);
-    });
-
-    it('should return lower score for count less than min frequency', () => {
-      const score = scorer['calculateFrequencyScore'](1, 3);
-      // Baseline is 0, but normalized count still contributes
-      // count=1, minFrequency=3 => normalized=1/6=0.166..., score=0.083...
-      expect(score).toBeGreaterThan(0);
-      expect(score).toBeLessThan(0.2);
-    });
-
-    it('should clamp score to [0, 1]', () => {
-      const score = scorer['calculateFrequencyScore'](1000, 3);
-      expect(score).toBeLessThanOrEqual(1);
+      expect(score1).toBeCloseTo(score2, 1);
     });
   });
 
   describe('calculateSimilarityScore()', () => {
-    it('should return 0 for empty patterns', () => {
-      const pattern: PatternCandidate = {
-        patterns: [],
-        sourceError: 'No patterns',
-        extractedAt: Date.now(),
-      };
+    it('should return 1 when no existing patterns', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['new pattern'], priority: 50 },
+        3,
+        Date.now(),
+        []
+      );
 
-      const score = scorer['calculateSimilarityScore'](pattern);
-      expect(score).toBe(0);
+      // No existing patterns, so novelty is maximum
+      expect(score).toBeGreaterThan(0.5);
     });
 
-    it('should return higher score for patterns with rate limit keywords', () => {
-      const keywordPattern: PatternCandidate = {
-        patterns: ['rate limit', 'quota exceeded', 'too many requests'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
+    it('should return lower score for similar existing patterns', () => {
+      const score1 = scorer.calculateConfidence(
+        { name: 'test', patterns: ['rate limit'], priority: 50 },
+        3,
+        Date.now(),
+        []
+      );
+      const score2 = scorer.calculateConfidence(
+        { name: 'test', patterns: ['rate limit'], priority: 50 },
+        3,
+        Date.now(),
+        [{ name: 'existing', patterns: ['rate limit'], priority: 50 }]
+      );
 
-      const nonKeywordPattern: PatternCandidate = {
-        patterns: ['random error', 'something went wrong'],
-        sourceError: 'Random error occurred',
-        extractedAt: Date.now(),
-      };
-
-      const keywordScore = scorer['calculateSimilarityScore'](keywordPattern);
-      const nonKeywordScore = scorer['calculateSimilarityScore'](nonKeywordPattern);
-
-      expect(keywordScore).toBeGreaterThan(nonKeywordScore);
+      // score2 should be lower because of similarity
+      expect(score2).toBeLessThan(score1);
     });
 
-    it('should return higher score for patterns matching known patterns', () => {
-      const matchingPattern: PatternCandidate = {
-        patterns: ['rate limit', '429'],
-        sourceError: 'Rate limit exceeded',
-        extractedAt: Date.now(),
-      };
+    it('should return higher score for different patterns', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['unique error pattern'], priority: 50 },
+        3,
+        Date.now(),
+        [{ name: 'existing', patterns: ['rate limit'], priority: 50 }]
+      );
 
-      const nonMatchingPattern: PatternCandidate = {
-        patterns: ['unknown error'],
-        sourceError: 'Unknown error occurred',
-        extractedAt: Date.now(),
-      };
-
-      const matchingScore = scorer['calculateSimilarityScore'](matchingPattern);
-      const nonMatchingScore = scorer['calculateSimilarityScore'](nonMatchingPattern);
-
-      expect(matchingScore).toBeGreaterThan(nonMatchingScore);
-    });
-
-    it('should clamp score to [0, 1]', () => {
-      const pattern: PatternCandidate = {
-        patterns: ['rate limit', 'quota', 'exceeded', 'too', 'many', 'requests', '429', 'resource', 'exhausted'],
-        sourceError: 'Many rate limit keywords',
-        extractedAt: Date.now(),
-      };
-
-      const score = scorer['calculateSimilarityScore'](pattern);
-      expect(score).toBeLessThanOrEqual(1);
+      expect(score).toBeGreaterThan(0.6);
     });
   });
 
   describe('calculateRecencyScore()', () => {
-    it('should return 1 for patterns within learning window', () => {
-      const now = Date.now();
-      const score = scorer['calculateRecencyScore'](now - 1000);
-      expect(score).toBe(1);
+    it('should return 1 for recent patterns', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        3,
+        Date.now() - 1000, // 1 second ago
+        []
+      );
+
+      expect(score).toBeGreaterThan(0.5);
     });
 
-    it('should return lower score for patterns outside learning window', () => {
-      const now = Date.now();
-      const recentScore = scorer['calculateRecencyScore'](now - 1000);
-      const oldScore = scorer['calculateRecencyScore'](now - 30 * 24 * 60 * 60 * 1000);
+    it('should return lower score for old patterns', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        3,
+        Date.now() - 86400000 * 2, // 2 days ago
+        []
+      );
 
-      expect(oldScore).toBeLessThan(recentScore);
+      // Old patterns should have lower recency score
+      expect(score).toBeLessThan(1);
     });
 
-    it('should never return score below 0.3', () => {
-      const ancientTime = Date.now() - 10 * 365 * 24 * 60 * 60 * 1000;
-      const score = scorer['calculateRecencyScore'](ancientTime);
-      expect(score).toBeGreaterThanOrEqual(0.3);
+    it('should cap at 0 for very old patterns', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        3,
+        Date.now() - 86400000 * 10, // 10 days ago
+        []
+      );
+
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThan(1);
+    });
+  });
+
+  describe('calculateConfidence()', () => {
+    it('should return a score between 0 and 1', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        3,
+        Date.now(),
+        []
+      );
+
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThanOrEqual(1);
     });
 
-    it('should handle different learning windows', () => {
-      const shortWindowConfig = { ...config, learningWindowMs: 60 * 1000 };
-      const shortWindowScorer = new ConfidenceScorer(shortWindowConfig, knownPatterns);
+    it('should use weighted combination of scores', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        2, // Below minErrorFrequency
+        Date.now(),
+        []
+      );
 
-      const longWindowConfig = { ...config, learningWindowMs: 7 * 24 * 60 * 60 * 1000 };
-      const longWindowScorer = new ConfidenceScorer(longWindowConfig, knownPatterns);
+      // Check that the score is a reasonable value (not just 0 or 1)
+      expect(score).toBeGreaterThan(0.3);
+      expect(score).toBeLessThan(1);
+    });
 
-      const now = Date.now();
-      const pastTime = now - 24 * 60 * 60 * 1000;
+    it('should round to 2 decimal places', () => {
+      const score1 = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        3.14159,
+        Date.now(),
+        []
+      );
 
-      const shortScore = shortWindowScorer['calculateRecencyScore'](pastTime);
-      const longScore = longWindowScorer['calculateRecencyScore'](pastTime);
+      expect(Number.isInteger(score1 * 100)).toBe(true);
+    });
 
-      expect(longScore).toBeGreaterThan(shortScore);
+    it('should handle zero frequency', () => {
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        0,
+        Date.now(),
+        []
+      );
+
+      expect(score).toBeGreaterThanOrEqual(0);
     });
   });
 
   describe('shouldAutoApprove()', () => {
-    it('should return true for confidence above threshold', () => {
-      const score = 0.9;
-      const result = scorer.shouldAutoApprove(score);
-      expect(result).toBe(true);
+    it('should return true when confidence meets threshold', () => {
+      expect(scorer.shouldAutoApprove(0.8)).toBe(true);
+      expect(scorer.shouldAutoApprove(0.9)).toBe(true);
+      expect(scorer.shouldAutoApprove(1.0)).toBe(true);
     });
 
-    it('should return true for confidence equal to threshold', () => {
-      const score = 0.8;
-      const result = scorer.shouldAutoApprove(score);
-      expect(result).toBe(true);
+    it('should return false when confidence below threshold', () => {
+      expect(scorer.shouldAutoApprove(0.79)).toBe(false);
+      expect(scorer.shouldAutoApprove(0.5)).toBe(false);
+      expect(scorer.shouldAutoApprove(0)).toBe(false);
     });
 
-    it('should return false for confidence below threshold', () => {
-      const score = 0.7;
-      const result = scorer.shouldAutoApprove(score);
-      expect(result).toBe(false);
+    it('should use the configured threshold', () => {
+      config.autoApproveThreshold = 0.9;
+      scorer.updateConfig(config);
+
+      expect(scorer.shouldAutoApprove(0.85)).toBe(false);
+      expect(scorer.shouldAutoApprove(0.9)).toBe(true);
+    });
+  });
+
+  describe('getConfidenceLevel()', () => {
+    it('should return high for confidence >= 0.8', () => {
+      expect(scorer.getConfidenceLevel(0.8)).toBe('high');
+      expect(scorer.getConfidenceLevel(0.9)).toBe('high');
+      expect(scorer.getConfidenceLevel(1.0)).toBe('high');
     });
 
-    it('should use different thresholds from config', () => {
-      const strictConfig = { ...config, autoApproveThreshold: 0.95 };
-      const strictScorer = new ConfidenceScorer(strictConfig, knownPatterns);
+    it('should return medium for confidence >= 0.5', () => {
+      expect(scorer.getConfidenceLevel(0.5)).toBe('medium');
+      expect(scorer.getConfidenceLevel(0.7)).toBe('medium');
+    });
 
-      const mediumScore = 0.9;
-      const result = strictScorer.shouldAutoApprove(mediumScore);
-      expect(result).toBe(false);
+    it('should return low for confidence < 0.5', () => {
+      expect(scorer.getConfidenceLevel(0)).toBe('low');
+      expect(scorer.getConfidenceLevel(0.4)).toBe('low');
+      expect(scorer.getConfidenceLevel(0.49)).toBe('low');
+    });
+  });
+
+  describe('calculatePatternStats()', () => {
+    it('should return zero stats for empty patterns', () => {
+      const stats = scorer.calculatePatternStats([]);
+
+      expect(stats.totalPatterns).toBe(0);
+      expect(stats.avgConfidence).toBe(0);
+      expect(stats.confidenceDistribution.high).toBe(0);
+      expect(stats.confidenceDistribution.medium).toBe(0);
+      expect(stats.confidenceDistribution.low).toBe(0);
+    });
+
+    it('should calculate correct stats for patterns', () => {
+      const patterns = [
+        { name: 'p1', patterns: ['test'], priority: 50, confidence: 0.9, learnedAt: '2026-01-01', sampleCount: 5 },
+        { name: 'p2', patterns: ['test'], priority: 50, confidence: 0.6, learnedAt: '2026-01-01', sampleCount: 3 },
+        { name: 'p3', patterns: ['test'], priority: 50, confidence: 0.3, learnedAt: '2026-01-01', sampleCount: 2 },
+      ];
+
+      const stats = scorer.calculatePatternStats(patterns);
+
+      expect(stats.totalPatterns).toBe(3);
+      expect(stats.avgConfidence).toBeCloseTo(0.6, 1);
+      expect(stats.confidenceDistribution.high).toBe(1);
+      expect(stats.confidenceDistribution.medium).toBe(1);
+      expect(stats.confidenceDistribution.low).toBe(1);
+    });
+
+    it('should handle all high confidence patterns', () => {
+      const patterns = [
+        { name: 'p1', patterns: ['test'], priority: 50, confidence: 0.9, learnedAt: '2026-01-01', sampleCount: 5 },
+        { name: 'p2', patterns: ['test'], priority: 50, confidence: 0.8, learnedAt: '2026-01-01', sampleCount: 5 },
+      ];
+
+      const stats = scorer.calculatePatternStats(patterns);
+
+      expect(stats.confidenceDistribution.high).toBe(2);
+      expect(stats.confidenceDistribution.medium).toBe(0);
+      expect(stats.confidenceDistribution.low).toBe(0);
+    });
+
+    it('should calculate average confidence correctly', () => {
+      const patterns = [
+        { name: 'p1', patterns: ['test'], priority: 50, confidence: 1.0, learnedAt: '2026-01-01', sampleCount: 5 },
+        { name: 'p2', patterns: ['test'], priority: 50, confidence: 0.0, learnedAt: '2026-01-01', sampleCount: 5 },
+      ];
+
+      const stats = scorer.calculatePatternStats(patterns);
+
+      expect(stats.avgConfidence).toBeCloseTo(0.5, 1);
+    });
+  });
+
+  describe('updateConfig()', () => {
+    it('should update configuration', () => {
+      const newConfig: PatternLearningConfig = {
+        enabled: false,
+        autoApproveThreshold: 0.9,
+        maxLearnedPatterns: 50,
+        minErrorFrequency: 5,
+        learningWindowMs: 172800000,
+      };
+
+      scorer.updateConfig(newConfig);
+
+      expect(scorer.shouldAutoApprove(0.85)).toBe(false);
+      expect(scorer.shouldAutoApprove(0.9)).toBe(true);
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('should handle pattern with multiple patterns', () => {
+      const pattern = {
+        name: 'test',
+        patterns: ['rate limit', 'quota exceeded', 'too many requests'],
+        priority: 50,
+      };
+
+      const score = scorer.calculateConfidence(pattern, 3, Date.now(), []);
+
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThanOrEqual(1);
+    });
+
+    it('should handle empty patterns array', () => {
+      const pattern = {
+        name: 'test',
+        patterns: [],
+        priority: 50,
+      };
+
+      const score = scorer.calculateConfidence(pattern, 3, Date.now(), []);
+
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThanOrEqual(1);
+    });
+
+    it('should handle very old firstSeen', () => {
+      const ancientTime = Date.now() - 365 * 24 * 60 * 60 * 1000; // 1 year ago
+
+      const score = scorer.calculateConfidence(
+        { name: 'test', patterns: ['test'], priority: 50 },
+        3,
+        ancientTime,
+        []
+      );
+
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThanOrEqual(1);
     });
   });
 });

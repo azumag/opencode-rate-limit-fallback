@@ -22,7 +22,8 @@ import {
   DEFAULT_METRICS_CONFIG,
   DEFAULT_CONFIG_RELOAD_CONFIG,
   DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
-  DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
+  DEFAULT_ERROR_PATTERNS_CONFIG,
+  DEFAULT_PATTERN_LEARNING_CONFIG,
 } from '../config/defaults.js';
 
 /**
@@ -40,7 +41,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
   metrics: DEFAULT_METRICS_CONFIG,
   configReload: DEFAULT_CONFIG_RELOAD_CONFIG,
   dynamicPrioritization: DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
-  errorPatterns: DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
+  errorPatterns: DEFAULT_ERROR_PATTERNS_CONFIG,
 };
 
 /**
@@ -127,9 +128,14 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
       ...config.dynamicPrioritization,
     } : DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
     errorPatterns: config.errorPatterns ? {
-      ...DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
+      ...DEFAULT_ERROR_PATTERNS_CONFIG,
       ...config.errorPatterns,
-    } : DEFAULT_ERROR_PATTERN_LEARNING_CONFIG,
+      enableLearning: config.errorPatterns.enableLearning ?? DEFAULT_PATTERN_LEARNING_CONFIG.enabled,
+      autoApproveThreshold: config.errorPatterns.autoApproveThreshold ?? DEFAULT_PATTERN_LEARNING_CONFIG.autoApproveThreshold,
+      maxLearnedPatterns: config.errorPatterns.maxLearnedPatterns ?? DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns,
+      minErrorFrequency: config.errorPatterns.minErrorFrequency ?? DEFAULT_PATTERN_LEARNING_CONFIG.minErrorFrequency,
+      learningWindowMs: config.errorPatterns.learningWindowMs ?? DEFAULT_PATTERN_LEARNING_CONFIG.learningWindowMs,
+    } : DEFAULT_ERROR_PATTERNS_CONFIG,
   };
 }
 
