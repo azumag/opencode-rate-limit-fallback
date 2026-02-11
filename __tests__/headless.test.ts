@@ -115,10 +115,11 @@ describe('Headless Mode (No TUI)', () => {
             },
         })).resolves.not.toThrow();
 
-        // Verify fallback logic still executed (abort called)
-        expect(mockClient.session.abort).toHaveBeenCalled();
-        // Verify prompt called (fallback happened)
+        // Verify promptAsync called (fallback queued)
         expect(mockClient.session.promptAsync).toHaveBeenCalled();
+        // Verify abort is NOT called in headless mode
+        // (abort's AbortController signal persists and kills the new stream)
+        expect(mockClient.session.abort).not.toHaveBeenCalled();
 
         // Verify logs were printed (using console spy because logger writes to console)
         // "Rate Limit Detected" is warning
@@ -128,6 +129,34 @@ describe('Headless Mode (No TUI)', () => {
         // Note: Default log level is 'warn', so info logs might not show up unless configured.
         // However, we didn't change default config level suitable for headless yet.
         // Let's verify at least warning is logged.
+    });
+
+    it('should NOT call abort in headless mode (only promptAsync)', async () => {
+        // In headless mode, abort's AbortController signal persists and kills the new stream.
+        // So we only call promptAsync to queue the fallback prompt and let the server's
+        // retry loop finish naturally.
+        mockClient.session.messages.mockResolvedValue({
+            data: [
+                {
+                    info: { id: 'msg-no-abort', role: 'user' },
+                    parts: [{ type: 'text', text: 'test message' }],
+                },
+            ],
+        });
+
+        const error = { name: "APIError", data: { statusCode: 429 } };
+
+        await pluginInstance.event?.({
+            event: {
+                type: 'session.error',
+                properties: { sessionID: 'test-no-abort', error },
+            },
+        });
+
+        // promptAsync IS called to queue fallback prompt
+        expect(mockClient.session.promptAsync).toHaveBeenCalled();
+        // abort is NOT called — prevents AbortController signal from killing new stream
+        expect(mockClient.session.abort).not.toHaveBeenCalled();
     });
 
     it('should handle toast with different structures in headless mode', async () => {

@@ -197,11 +197,15 @@ export class FallbackHandler {
     });
 
     // 2. abort: cancel the retry loop; server sees queued prompt and processes it
-    await this.abortSession(targetSessionID);
+    // Only abort in TUI mode - in headless, let server's retry loop finish naturally
+    // so the pending prompt is processed without abort signal interference
+    if (this.client.tui) {
+      await this.abortSession(targetSessionID);
+    }
 
     await safeShowToast(this.client, {
       body: {
-        title: "Fallback Successful",
+        title: this.client.tui ? "Fallback Successful" : "Fallback Queued",
         message: `Now using ${model.modelID}`,
         variant: "success",
         duration: 3000,
