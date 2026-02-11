@@ -188,7 +188,7 @@ export class ConfigValidator {
         }
 
         if (config.retryPolicy.strategy !== undefined) {
-          const validStrategies = ['immediate', 'exponential', 'linear', 'custom'];
+          const validStrategies = ['immediate', 'exponential', 'linear', 'polynomial', 'custom'];
           if (!validStrategies.includes(config.retryPolicy.strategy)) {
             errors.push({
               path: 'retryPolicy.strategy',

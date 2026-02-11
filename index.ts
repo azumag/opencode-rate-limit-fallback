@@ -311,6 +311,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       // Handle message.updated events
       if (isMessageUpdatedEvent(event)) {
         const info = event.properties.info;
+
+        // Track model info for all assistant messages (needed to identify current model on session.error)
+        if (info?.providerID && info?.modelID && info?.sessionID) {
+          fallbackHandler.setSessionModel(info.sessionID, info.providerID, info.modelID);
+        }
+
         if (info?.error && errorPatternRegistry.isRateLimitError(info.error)) {
           // Learn from this error if pattern learning is enabled
           const patternLearner = errorPatternRegistry.getPatternLearner();
