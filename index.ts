@@ -193,8 +193,68 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
     return {};
   }
 
-  // Disable fallback in headless mode — headless sessions should use their configured model only
+  // Headless mode — no model fallback, but optionally abort on rate limit
   if (isHeadless) {
+    if (config.headlessOnRateLimit === "abort") {
+      logger.info("Headless mode — will abort session on rate limit");
+
+      // Minimal setup: only error pattern detection + abort
+      const errorPatternRegistry = new ErrorPatternRegistry(logger);
+      if (config.errorPatterns?.custom) {
+        errorPatternRegistry.registerMany(config.errorPatterns.custom);
+      }
+
+      // Track sessions already aborted to avoid duplicate abort calls
+      const abortedSessions = new Set<string>();
+
+      const abortSession = async (sessionID: string, source: string) => {
+        if (abortedSessions.has(sessionID)) return;
+        abortedSessions.add(sessionID);
+        logger.info(`Rate limit detected (${source}) — aborting session ${sessionID}`);
+        try {
+          await client.session.abort({ path: { id: sessionID } });
+        } catch (err) {
+          logger.warn(`Failed to abort session ${sessionID}`, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      };
+
+      return {
+        event: async ({ event }) => {
+          if (isSessionErrorEvent(event)) {
+            const { sessionID, error } = event.properties;
+            if (sessionID && error && errorPatternRegistry.isRateLimitError(error)) {
+              await abortSession(sessionID, "session.error");
+            }
+          }
+
+          if (isMessageUpdatedEvent(event)) {
+            const info = event.properties.info;
+            if (info?.error && errorPatternRegistry.isRateLimitError(info.error)) {
+              await abortSession(info.sessionID, "message.updated");
+            }
+          }
+
+          if (isSessionStatusEvent(event)) {
+            const props = event.properties;
+            const status = props?.status;
+            if (status?.type === "retry" && status?.message) {
+              const message = status.message.toLowerCase();
+              const isRateLimitRetry =
+                message.includes("usage limit") ||
+                message.includes("rate limit") ||
+                message.includes("high concurrency") ||
+                message.includes("reduce concurrency");
+              if (isRateLimitRetry) {
+                await abortSession(props.sessionID, "session.status retry");
+              }
+            }
+          }
+        },
+      };
+    }
+
     logger.info("Headless mode detected — model fallback disabled");
     return {};
   }

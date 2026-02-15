@@ -10,6 +10,7 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 - Automatically aborts the current request and retries with a fallback model
 - Configurable fallback model list with priority order
 - Three fallback modes: `cycle`, `stop`, and `retry-last`
+- **Headless mode support** (`opencode run`): disable fallback or abort on rate limit
 - Session model tracking for sequential fallback across multiple rate limits
 - Cooldown period to prevent immediate retry on rate-limited models
 - **Exponential backoff with configurable retry policies**
@@ -117,6 +118,7 @@ Create a configuration file at one of these locations:
   | `enabled` | boolean | `true` | Enable/disable the plugin |
   | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
   | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
+  | `headlessOnRateLimit` | string | `undefined` | Headless mode behavior on rate limit (see below) |
   | `fallbackModels` | array | See below | List of fallback models in priority order |
   | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
    | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
@@ -235,6 +237,26 @@ my-repo/
 6. `~/.config/opencode/rate-limit-fallback.json`
 
 > **Note**: If you're using git worktrees and want different configurations per worktree, create config files in the worktree directories (locations 1-2). Otherwise, a single project-level or global config is sufficient.
+
+### Headless Mode (`opencode run`)
+
+When running in headless mode (no TUI), model fallback is disabled by default because headless sessions should use their configured model only.
+
+You can control what happens when a rate limit is detected in headless mode using the `headlessOnRateLimit` option:
+
+| Value | Description |
+|-------|-------------|
+| *(not set)* | Default behavior — do nothing, let the server's retry loop handle it |
+| `"ignore"` | Same as default — do nothing |
+| `"abort"` | Abort the session immediately to terminate the prompt |
+
+The `"abort"` option is useful when you want `opencode run` to fail fast on rate limits rather than waiting for the server's retry loop, which may retry indefinitely.
+
+```json
+{
+  "headlessOnRateLimit": "abort"
+}
+```
 
 ### Fallback Modes
 

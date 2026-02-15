@@ -9,6 +9,7 @@ import type { Logger } from '../../logger.js';
 import {
   DEFAULT_FALLBACK_MODELS,
   VALID_FALLBACK_MODES,
+  VALID_HEADLESS_ON_RATE_LIMIT,
   VALID_RESET_INTERVALS,
   DEFAULT_RETRY_POLICY,
   VALID_RETRY_STRATEGIES,
@@ -88,6 +89,7 @@ export interface ConfigLoadResult {
  */
 export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const mode = config.fallbackMode;
+  const headlessOnRateLimit = config.headlessOnRateLimit;
   const resetInterval = config.metrics?.resetInterval;
   const strategy = config.retryPolicy?.strategy;
 
@@ -96,6 +98,7 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
     ...config,
     fallbackModels: Array.isArray(config.fallbackModels) ? config.fallbackModels : DEFAULT_CONFIG.fallbackModels,
     fallbackMode: mode && VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
+    headlessOnRateLimit: headlessOnRateLimit && VALID_HEADLESS_ON_RATE_LIMIT.includes(headlessOnRateLimit) ? headlessOnRateLimit : undefined,
     retryPolicy: config.retryPolicy ? {
       ...DEFAULT_CONFIG.retryPolicy!,
       ...config.retryPolicy,

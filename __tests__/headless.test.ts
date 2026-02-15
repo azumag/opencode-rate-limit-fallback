@@ -126,6 +126,190 @@ describe('Headless Mode (No TUI)', () => {
     });
 });
 
+describe('Headless Mode with headlessOnRateLimit: "abort"', () => {
+    let pluginInstance: any;
+    let mockClient: any;
+
+    beforeEach(async () => {
+        vi.resetAllMocks();
+        // Config with abort option
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+            fallbackModels: [
+                { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
+            ],
+            enabled: true,
+            headlessOnRateLimit: "abort",
+        }));
+        mockClient = createHeadlessClient();
+
+        const result = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+
+        pluginInstance = result;
+    });
+
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('should register an event handler when headlessOnRateLimit is "abort"', () => {
+        expect(pluginInstance.event).toBeDefined();
+    });
+
+    it('should NOT set up fallback machinery (no promptAsync calls)', () => {
+        expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
+    });
+
+    it('should abort session on session.error rate limit', async () => {
+        const error = { name: "APIError", data: { statusCode: 429 } };
+
+        await pluginInstance.event({
+            event: {
+                type: 'session.error',
+                properties: { sessionID: 'headless-session-1', error },
+            },
+        });
+
+        expect(mockClient.session.abort).toHaveBeenCalledWith({
+            path: { id: 'headless-session-1' },
+        });
+        // Should NOT call promptAsync (no fallback)
+        expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
+    });
+
+    it('should abort session on message.updated rate limit', async () => {
+        const error = { name: "APIError", data: { statusCode: 429 } };
+
+        await pluginInstance.event({
+            event: {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        sessionID: 'headless-session-2',
+                        error,
+                    },
+                },
+            },
+        });
+
+        expect(mockClient.session.abort).toHaveBeenCalledWith({
+            path: { id: 'headless-session-2' },
+        });
+        expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
+    });
+
+    it('should abort session on session.status retry with rate limit message', async () => {
+        await pluginInstance.event({
+            event: {
+                type: 'session.status',
+                properties: {
+                    sessionID: 'headless-session-3',
+                    status: {
+                        type: 'retry',
+                        message: 'Usage limit reached, retrying...',
+                    },
+                },
+            },
+        });
+
+        expect(mockClient.session.abort).toHaveBeenCalledWith({
+            path: { id: 'headless-session-3' },
+        });
+        expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
+    });
+
+    it('should NOT abort on non-rate-limit errors', async () => {
+        const error = { name: "SyntaxError", message: "Unexpected token" };
+
+        await pluginInstance.event({
+            event: {
+                type: 'session.error',
+                properties: { sessionID: 'headless-session-4', error },
+            },
+        });
+
+        expect(mockClient.session.abort).not.toHaveBeenCalled();
+    });
+
+    it('should NOT abort on session.status retry without rate limit keywords', async () => {
+        await pluginInstance.event({
+            event: {
+                type: 'session.status',
+                properties: {
+                    sessionID: 'headless-session-5',
+                    status: {
+                        type: 'retry',
+                        message: 'Connection timeout, retrying...',
+                    },
+                },
+            },
+        });
+
+        expect(mockClient.session.abort).not.toHaveBeenCalled();
+    });
+
+    it('should deduplicate abort calls for the same session', async () => {
+        const error = { name: "APIError", data: { statusCode: 429 } };
+
+        // First event - should abort
+        await pluginInstance.event({
+            event: {
+                type: 'session.error',
+                properties: { sessionID: 'headless-session-6', error },
+            },
+        });
+
+        // Second event for same session - should skip
+        await pluginInstance.event({
+            event: {
+                type: 'message.updated',
+                properties: {
+                    info: { sessionID: 'headless-session-6', error },
+                },
+            },
+        });
+
+        // abort should only be called once
+        expect(mockClient.session.abort).toHaveBeenCalledTimes(1);
+    });
+
+    it('should handle abort failure gracefully', async () => {
+        mockClient.session.abort.mockRejectedValue(new Error('abort failed'));
+        const error = { name: "APIError", data: { statusCode: 429 } };
+
+        // Should not throw
+        await expect(pluginInstance.event({
+            event: {
+                type: 'session.error',
+                properties: { sessionID: 'headless-session-7', error },
+            },
+        })).resolves.not.toThrow();
+    });
+
+    it('should log abort action', async () => {
+        const error = { name: "APIError", data: { statusCode: 429 } };
+
+        await pluginInstance.event({
+            event: {
+                type: 'session.error',
+                properties: { sessionID: 'headless-session-8', error },
+            },
+        });
+
+        const allLogCalls = consoleLogSpy.mock.calls.map(c => String(c[0]));
+        expect(allLogCalls.some(msg =>
+            msg.includes('aborting session') && msg.includes('headless-session-8')
+        )).toBe(true);
+    });
+});
+
 describe('Config Loading with Worktree', () => {
     let mockClient: any;
 

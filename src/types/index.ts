@@ -25,6 +25,13 @@ export interface FallbackModel {
  */
 export type FallbackMode = "cycle" | "stop" | "retry-last";
 
+/**
+ * Headless mode behavior on rate limit:
+ * - "ignore": Do nothing, let server handle retries (default)
+ * - "abort": Abort the session to terminate the prompt immediately
+ */
+export type HeadlessOnRateLimit = "ignore" | "abort";
+
 // ============================================================================
 // Configuration Types
 // ============================================================================
@@ -272,6 +279,7 @@ export interface PluginConfig {
   cooldownMs: number;
   enabled: boolean;
   fallbackMode: FallbackMode;
+  headlessOnRateLimit?: HeadlessOnRateLimit;
   maxSubagentDepth?: number;
   enableSubagentFallback?: boolean;
   retryPolicy?: RetryPolicy;
@@ -606,6 +614,11 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = {
  * Valid fallback modes
  */
 export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last"];
+
+/**
+ * Valid headless on rate limit options
+ */
+export const VALID_HEADLESS_ON_RATE_LIMIT: HeadlessOnRateLimit[] = ["ignore", "abort"];
 
 /**
  * Valid retry strategies
