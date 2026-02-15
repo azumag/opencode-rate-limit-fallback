@@ -243,6 +243,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
               const message = status.message.toLowerCase();
               const isRateLimitRetry =
                 message.includes("usage limit") ||
+                message.includes("usage exceeded") ||
                 message.includes("rate limit") ||
                 message.includes("high concurrency") ||
                 message.includes("reduce concurrency");
@@ -410,6 +411,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
           const message = status.message.toLowerCase();
           const isRateLimitRetry =
             message.includes("usage limit") ||
+            message.includes("usage exceeded") ||
             message.includes("rate limit") ||
             message.includes("high concurrency") ||
             message.includes("reduce concurrency");

@@ -50,6 +50,7 @@ export class ErrorPatternRegistry {
         'ratelimit',
         'too many requests',
         'quota exceeded',
+        'usage exceeded',
       ],
       priority: 90,
     });
