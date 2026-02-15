@@ -106,7 +106,7 @@ describe('isRateLimitError', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should detect rate limit in message', async () => {
@@ -128,7 +128,7 @@ describe('isRateLimitError', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should detect rate limit in responseBody', async () => {
@@ -150,7 +150,7 @@ describe('isRateLimitError', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should detect quota exceeded', async () => {
@@ -172,7 +172,7 @@ describe('isRateLimitError', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should detect too many requests', async () => {
@@ -194,7 +194,7 @@ describe('isRateLimitError', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should detect 429 in message text', async () => {
@@ -216,7 +216,7 @@ describe('isRateLimitError', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should reject non-rate-limit errors', async () => {
@@ -502,7 +502,7 @@ describe('Fallback Modes', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('stop: should stop and show error when all models exhausted', async () => {
@@ -596,7 +596,7 @@ describe('Fallback Modes', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('retry-last: should reset after last model fails', async () => {
@@ -647,7 +647,7 @@ describe('Fallback Modes', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle file parts without mediaType', async () => {
@@ -739,7 +739,7 @@ describe('State Management', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
     expect(mockClient.session.promptAsync).toHaveBeenCalled();
   });
 });
@@ -785,7 +785,7 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle message.updated events', async () => {
@@ -812,7 +812,7 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle session.status events with retry status', async () => {
@@ -838,7 +838,7 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should show toast notification on rate limit detected', async () => {
@@ -1011,7 +1011,7 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
     });
 
     // Should have called abort now (since cleanup happened)
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle messages with no valid parts', async () => {
@@ -1072,7 +1072,7 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
     });
 
     // Should have attempted fallback
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 });
 
@@ -1196,7 +1196,7 @@ describe('Subagent Support', () => {
     });
 
     // Fallback should be triggered (on root session due to parent-centered approach)
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle nested subagents', async () => {
@@ -1243,7 +1243,7 @@ describe('Subagent Support', () => {
     });
 
     // Fallback should be triggered on root session (parent-centered approach)
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should trigger fallback at root level for subagent rate limits', async () => {
@@ -1279,7 +1279,7 @@ describe('Subagent Support', () => {
     });
 
     // Fallback should be triggered
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should propagate model changes to subagents', async () => {
@@ -1316,7 +1316,7 @@ describe('Subagent Support', () => {
     });
 
     // Fallback should be triggered on root session
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
     expect(mockClient.session.promptAsync).toHaveBeenCalled();
   });
 
@@ -1545,7 +1545,7 @@ describe('Subagent Support', () => {
     });
 
     // Fallback should be triggered
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 });
 
@@ -1934,7 +1934,7 @@ describe('safeShowToast Edge Cases', () => {
     });
 
     // Should log error since toast with missing title defaults to "Toast"
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle missing toast.body.message when TUI exists and showToast fails', async () => {
@@ -1959,7 +1959,7 @@ describe('safeShowToast Edge Cases', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle missing toast.body.variant when TUI exists and showToast fails', async () => {
@@ -1984,7 +1984,7 @@ describe('safeShowToast Edge Cases', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle toast with body missing entirely when TUI exists and showToast fails', async () => {
@@ -2010,7 +2010,7 @@ describe('safeShowToast Edge Cases', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should handle toast with all undefined values when TUI exists and showToast fails', async () => {
@@ -2035,7 +2035,7 @@ describe('safeShowToast Edge Cases', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 });
 
@@ -2298,7 +2298,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
 
     // Simulate message 1 completion
     await pluginInstance.event?.({
@@ -2338,7 +2338,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
     });
 
     // Should trigger fallback for second message (not skipped due to first fallback)
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 
   it('should allow fallback on same message after dedup window expires', async () => {
@@ -2361,7 +2361,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
       },
     });
 
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
 
     // Wait for dedup window to expire (6 seconds > 5 seconds window)
     await new Promise(resolve => setTimeout(resolve, 6000));
@@ -2387,7 +2387,7 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
     }, 10000); // Extend timeout to 10s
 
     // Abort should be called again
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   }, 10000);
 
   it('should clear fallback in progress when message completes successfully', async () => {
@@ -2444,6 +2444,6 @@ describe('Multiple Fallback Scenarios (Message Scope)', () => {
     });
 
     // Should trigger fallback
-    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalled();
   });
 });

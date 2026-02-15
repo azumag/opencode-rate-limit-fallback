@@ -124,9 +124,10 @@ export class FallbackHandler {
   }
 
   /**
-   * Queue prompt asynchronously (non-blocking) to schedule fallback.
-   * The server's retry loop finishes naturally; it then picks up the queued prompt.
-   * We do NOT call abort — its AbortController signal persists and kills the new stream.
+   * Abort current session, wait for server to settle, then queue fallback prompt.
+   * Abort stops the retry loop for permanent errors (e.g. "Free usage exceeded").
+   * The delay allows the server to reset session state / AbortController before
+   * the new promptAsync creates a fresh stream.
    */
   async retryWithModel(
     targetSessionID: string,
@@ -172,10 +173,22 @@ export class FallbackHandler {
       this.modelRequestStartTimes.set(modelKey, Date.now());
     }
 
-    // Convert internal MessagePart to SDK-compatible format
-    const sdkParts = convertPartsToSDKFormat(parts);
+    // 1. Abort: stop the current retry loop
+    try {
+      await this.client.session.abort({ path: { id: targetSessionID } });
+      this.logger.info("Aborted session before fallback", { sessionID: targetSessionID });
+    } catch (err) {
+      this.logger.warn("Failed to abort session before fallback", {
+        sessionID: targetSessionID,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
-    // 1. promptAsync: queue the new prompt (returns immediately, non-blocking)
+    // 2. Delay: let the server reset session state / AbortController
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // 3. promptAsync: queue the fallback prompt (returns immediately)
+    const sdkParts = convertPartsToSDKFormat(parts);
     await this.client.session.promptAsync({
       path: { id: targetSessionID },
       body: {
@@ -183,11 +196,6 @@ export class FallbackHandler {
         model: { providerID: model.providerID, modelID: model.modelID },
       },
     });
-
-    // Do NOT call abort after promptAsync.
-    // The AbortController signal persists and kills the newly queued stream too,
-    // causing "interrupted" in TUI mode and server disposal in headless mode.
-    // Let the server's retry loop finish naturally; it will pick up the queued prompt.
 
     await safeShowToast(this.client, {
       body: {

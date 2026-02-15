@@ -360,6 +360,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
 
   return {
     event: async ({ event }) => {
+      // Debug: log all events to identify how "Free usage exceeded" arrives
+      const rawEvt = event as { type: string; properties?: unknown };
+      const evtJson = JSON.stringify(rawEvt, null, 0);
+      if (evtJson.toLowerCase().includes("exceeded") || evtJson.toLowerCase().includes("free usage") || evtJson.toLowerCase().includes("credits")) {
+        logger.info("DEBUG rate-limit-related event", { type: rawEvt.type, properties: rawEvt.properties });
+      }
+
       // Handle session.error events
       if (isSessionErrorEvent(event)) {
         const { sessionID, error } = event.properties;
