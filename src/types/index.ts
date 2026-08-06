@@ -202,6 +202,7 @@ export interface ErrorPattern {
  */
 export interface ErrorPatternsConfig {
   custom?: ErrorPattern[];
+  ignorePatterns?: readonly (string | RegExp)[];
   enableLearning?: boolean;
   learnedPatterns?: LearnedPattern[];
   autoApproveThreshold?: number;

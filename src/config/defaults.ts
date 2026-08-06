@@ -157,6 +157,10 @@ export const DEFAULT_PATTERN_LEARNING_CONFIG = {
  */
 export const DEFAULT_ERROR_PATTERNS_CONFIG = {
   custom: undefined,
+  ignorePatterns: [
+    'not your plan limits',
+    'draw from your extra usage',
+  ],
   enableLearning: false,
   autoApproveThreshold: 0.8,
   maxLearnedPatterns: 20,

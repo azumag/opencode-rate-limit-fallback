@@ -320,6 +320,40 @@ describe('ConfigValidator', () => {
       expect(result.errors).toHaveLength(0);
     });
 
+    it('should validate valid ignore patterns', () => {
+      const config = {
+        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
+        cooldownMs: 5000,
+        enabled: true,
+        fallbackMode: 'cycle' as const,
+        errorPatterns: {
+          ignorePatterns: ['not your plan limits', /draw from your extra usage/i],
+        },
+      };
+
+      const result = validator.validate(config);
+
+      expect(result.isValid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it('should reject non-array ignore patterns', () => {
+      const config = {
+        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
+        cooldownMs: 5000,
+        enabled: true,
+        fallbackMode: 'cycle' as const,
+        errorPatterns: {
+          ignorePatterns: 'not-an-array',
+        },
+      };
+
+      const result = validator.validate(config, { strict: true });
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.path === 'errorPatterns.ignorePatterns')).toBe(true);
+    });
+
     // Skip error patterns validation tests - Validator doesn't validate individual pattern elements yet
     // These tests can be re-enabled when pattern validation is implemented
     it.skip('should reject error pattern with empty name (strict mode)', () => {
