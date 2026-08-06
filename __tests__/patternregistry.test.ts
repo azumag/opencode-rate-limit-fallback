@@ -78,6 +78,45 @@ describe('ErrorPatternRegistry', () => {
       expect(result).toBe(true);
     });
 
+    it('should ignore the benign Anthropic extra usage billing notice', () => {
+      const error = {
+        message: 'Third-party apps now draw from your extra usage, not your plan limits.',
+      };
+
+      const result = registry.isRateLimitError(error);
+
+      expect(result).toBe(false);
+    });
+
+    it('should not let ignore patterns swallow an explicit HTTP 429 signal', () => {
+      const error = {
+        name: 'APIError',
+        data: {
+          statusCode: 429,
+          message: 'Third-party apps now draw from your extra usage, not your plan limits.',
+        },
+      };
+
+      const result = registry.isRateLimitError(error);
+
+      expect(result).toBe(true);
+    });
+
+    it('should not let ignore patterns swallow an explicit rate_limit_error signal', () => {
+      const error = {
+        data: {
+          responseBody: JSON.stringify({
+            error: 'rate_limit_error',
+            message: 'Third-party apps now draw from your extra usage, not your plan limits.',
+          }),
+        },
+      };
+
+      const result = registry.isRateLimitError(error);
+
+      expect(result).toBe(true);
+    });
+
     it('should detect "too many requests" keyword', () => {
       const error = {
         message: 'Too many requests, please try again later',
@@ -246,6 +285,16 @@ describe('ErrorPatternRegistry', () => {
       expect(pattern).not.toBeNull();
       expect(pattern!.priority).toBe(150);
       expect(pattern!.name).toBe('custom-high-priority');
+    });
+
+    it('should return null when an ignore pattern matches without a strong rate-limit signal', () => {
+      const error = {
+        message: 'Third-party apps now draw from your extra usage, not your plan limits.',
+      };
+
+      const pattern = registry.getMatchedPattern(error);
+
+      expect(pattern).toBeNull();
     });
   });
 

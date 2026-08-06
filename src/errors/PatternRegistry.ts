@@ -3,7 +3,8 @@
  */
 
 import type { ErrorPattern, LearnedPattern, PatternLearningConfig } from '../types/index.js';
-import { Logger } from '../../logger.js';
+import type { Logger } from '../../logger.js';
+import { DEFAULT_ERROR_PATTERNS_CONFIG } from '../config/defaults.js';
 import { PatternLearner } from './PatternLearner.js';
 
 /**
@@ -12,6 +13,7 @@ import { PatternLearner } from './PatternLearner.js';
  */
 export class ErrorPatternRegistry {
   private patterns: ErrorPattern[] = [];
+  private ignorePatterns: (string | RegExp)[] = [];
   private learnedPatterns: LearnedPattern[] = [];
   private patternLearner: PatternLearner | null = null;
   private learningConfig: PatternLearningConfig | null = null;
@@ -19,7 +21,10 @@ export class ErrorPatternRegistry {
   // @ts-ignore - Unused but kept for potential future use
   private _logger: Logger;
 
-  constructor(logger?: Logger) {
+  constructor(
+    logger?: Logger,
+    ignorePatterns: readonly (string | RegExp)[] = [...(DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns ?? [])],
+  ) {
     // Initialize logger
     this._logger = logger || {
       debug: () => {},
@@ -29,6 +34,7 @@ export class ErrorPatternRegistry {
     } as unknown as Logger;
 
     this.registerDefaultPatterns();
+    this.registerIgnorePatterns(ignorePatterns);
   }
 
   /**
@@ -49,8 +55,11 @@ export class ErrorPatternRegistry {
         'rate_limit',
         'ratelimit',
         'too many requests',
+        'usage limit',
         'quota exceeded',
         'usage exceeded',
+        'high concurrency',
+        'reduce concurrency',
       ],
       priority: 90,
     });
@@ -122,6 +131,14 @@ export class ErrorPatternRegistry {
     for (const pattern of patterns) {
       this.register(pattern);
     }
+  }
+
+  registerIgnorePatterns(patterns: readonly (string | RegExp)[]): void {
+    this.ignorePatterns = [...patterns];
+  }
+
+  getIgnorePatterns(): (string | RegExp)[] {
+    return [...this.ignorePatterns];
   }
 
   /**
@@ -216,24 +233,15 @@ export class ErrorPatternRegistry {
     // Combine all text sources for matching
     const allText = [responseBody, message, name, statusCode].join(' ').toLowerCase();
 
+    const hasStrongRateLimitSignal = this.hasStrongRateLimitSignal(allText);
+    if (!hasStrongRateLimitSignal && this.matchesIgnorePattern(allText)) {
+      return null;
+    }
+
     // Check each pattern in default patterns first
     for (const pattern of this.patterns) {
       for (const patternStr of pattern.patterns) {
-        let match = false;
-
-        if (typeof patternStr === 'string') {
-          // String matching (case-insensitive)
-          if (allText.includes(patternStr.toLowerCase())) {
-            match = true;
-          }
-        } else if (patternStr instanceof RegExp) {
-          // RegExp matching
-          if (patternStr.test(allText)) {
-            match = true;
-          }
-        }
-
-        if (match) {
+        if (this.matchesPattern(patternStr, allText)) {
           return pattern;
         }
       }
@@ -242,21 +250,7 @@ export class ErrorPatternRegistry {
     // Check learned patterns
     for (const pattern of this.learnedPatterns) {
       for (const patternStr of pattern.patterns) {
-        let match = false;
-
-        if (typeof patternStr === 'string') {
-          // String matching (case-insensitive)
-          if (allText.includes(patternStr.toLowerCase())) {
-            match = true;
-          }
-        } else if (patternStr instanceof RegExp) {
-          // RegExp matching
-          if (patternStr.test(allText)) {
-            match = true;
-          }
-        }
-
-        if (match) {
+        if (this.matchesPattern(patternStr, allText)) {
           return pattern;
         }
       }
@@ -347,5 +341,28 @@ export class ErrorPatternRegistry {
     if (priority >= 70) return 'medium (70-89)';
     if (priority >= 50) return 'low (50-69)';
     return 'very low (<50)';
+  }
+
+  private matchesIgnorePattern(text: string): boolean {
+    for (const pattern of this.ignorePatterns) {
+      if (this.matchesPattern(pattern, text)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private hasStrongRateLimitSignal(text: string): boolean {
+    return this.matchesPattern(/\b429\b/i, text) || this.matchesPattern('rate_limit_error', text);
+  }
+
+  private matchesPattern(pattern: string | RegExp, text: string): boolean {
+    if (typeof pattern === 'string') {
+      return text.includes(pattern.toLowerCase());
+    }
+
+    pattern.lastIndex = 0;
+    return pattern.test(text);
   }
 }
