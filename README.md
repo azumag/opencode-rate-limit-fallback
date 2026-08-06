@@ -6,7 +6,8 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 
 ## Features
 
-- Detects rate limit errors (429, "usage limit", "quota exceeded", "high concurrency", etc.)
+- Detects rate limit errors (429, `rate_limit_error`, "usage limit", "quota exceeded", "high concurrency", etc.)
+- Ignores known benign Anthropic billing notices so they do not trigger false-positive fallbacks
 - Automatically aborts the current request and retries with a fallback model
 - Configurable fallback model list with priority order
 - Three fallback modes: `cycle`, `stop`, and `retry-last`
@@ -122,10 +123,39 @@ Create a configuration file at one of these locations:
   | `fallbackModels` | array | See below | List of fallback models in priority order |
   | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
    | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
-   | `retryPolicy` | object | See below | Retry policy configuration (see below) |
-   | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
-   | `configReload` | object | See below | Configuration hot reload settings (see below) |
-   | `dynamicPrioritization` | object | See below | Dynamic prioritization settings (see below) |
+  | `retryPolicy` | object | See below | Retry policy configuration (see below) |
+  | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
+  | `errorPatterns` | object | See below | Advanced rate-limit matching overrides and false-positive ignores |
+  | `configReload` | object | See below | Configuration hot reload settings (see below) |
+  | `dynamicPrioritization` | object | See below | Dynamic prioritization settings (see below) |
+
+### Error Pattern Overrides
+
+The plugin now applies a small ignore list before general substring matching so benign provider notices do not trigger a fallback by mistake.
+
+Built-in ignore patterns:
+
+- `not your plan limits`
+- `draw from your extra usage`
+
+Strong signals still win over the ignore list:
+
+- HTTP `429`
+- explicit `rate_limit_error`
+
+Use `errorPatterns.ignorePatterns` to add your own false-positive suppressions:
+
+```json
+{
+  "errorPatterns": {
+    "ignorePatterns": [
+      "not your plan limits",
+      "draw from your extra usage",
+      "internal billing notice"
+    ]
+  }
+}
+```
 
 ### Dynamic Prioritization
 
