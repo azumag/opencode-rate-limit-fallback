@@ -291,27 +291,20 @@ describe('HealthTracker', () => {
       tracker.recordSuccess('anthropic', 'claude-3-5-sonnet-20250514', 1000);
       tracker.destroy();
 
-      // Wait for async save
-      setTimeout(() => {
-        expect(existsSync(testPersistencePath)).toBe(true);
-      }, 100);
+      expect(existsSync(testPersistencePath)).toBe(true);
     });
 
     it('should load health data from file on initialization', () => {
-      // Create and destroy first tracker
       tracker.recordSuccess('anthropic', 'claude-3-5-sonnet-20250514', 1000);
       tracker.destroy();
 
-      // Wait for save and create new tracker
-      setTimeout(() => {
-        const newTracker = new HealthTracker(testConfig, logger);
-        const health = newTracker.getModelHealth('anthropic', 'claude-3-5-sonnet-20250514');
+      const newTracker = new HealthTracker(testConfig, logger);
+      const health = newTracker.getModelHealth('anthropic', 'claude-3-5-sonnet-20250514');
 
-        expect(health).not.toBeNull();
-        expect(health!.successfulRequests).toBe(1);
+      expect(health).not.toBeNull();
+      expect(health!.successfulRequests).toBe(1);
 
-        newTracker.destroy();
-      }, 100);
+      newTracker.destroy();
     });
 
     it('should handle missing persistence file gracefully', () => {
