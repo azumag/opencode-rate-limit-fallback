@@ -266,6 +266,52 @@ describe('isRateLimitError', () => {
 
     expect(mockClient.session.abort).not.toHaveBeenCalled();
   });
+
+  it('should ignore the benign Anthropic extra usage billing notice', async () => {
+    const error = {
+      data: {
+        message: 'Third-party apps now draw from your extra usage, not your plan limits.',
+      },
+    };
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
+  });
+
+  it('should still fallback on HTTP 429 even when the body contains the ignored billing notice', async () => {
+    const error = {
+      name: 'APIError',
+      data: {
+        statusCode: 429,
+        message: 'Third-party apps now draw from your extra usage, not your plan limits.',
+      },
+    };
+
+    vi.mocked(mockClient.session.messages).mockResolvedValue({
+      data: [
+        {
+          info: { id: 'msg1', role: 'user' },
+          parts: [{ type: 'text', text: 'test message' }],
+        },
+      ],
+    });
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.error',
+        properties: { sessionID: 'test-session', error },
+      },
+    });
+
+    expect(mockClient.session.abort).toHaveBeenCalled();
+  });
 });
 
 describe('loadConfig', () => {
