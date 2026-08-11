@@ -3,6 +3,8 @@ import { PatternStorage } from '../src/errors/PatternStorage';
 import type { PatternLearningConfig, LearnedPattern } from '../src/types/index';
 import * as fs from 'fs/promises';
 
+vi.mock('fs/promises');
+
 describe('PatternStorage', () => {
   let storage: PatternStorage;
   let config: PatternLearningConfig;
@@ -17,8 +19,6 @@ describe('PatternStorage', () => {
     };
     storage = new PatternStorage(config);
 
-    // Mock fs
-    vi.mock('fs/promises');
   });
 
   describe('updateConfig()', () => {
