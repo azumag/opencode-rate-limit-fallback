@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ErrorPatternRegistry } from '../src/errors/PatternRegistry';
 import { Logger } from '../logger';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 describe('ErrorPatternRegistry', () => {
   let registry: ErrorPatternRegistry;
@@ -163,10 +166,7 @@ describe('ErrorPatternRegistry', () => {
       expect(result).toBe(true);
     });
 
-    it.skip('should NOT detect 429 as part of a larger number (e.g., 4291)', () => {
-      // Note: The current regex pattern \b429\b will match 429 in 4291
-      // because JavaScript's word boundary treats digit boundaries as word boundaries
-      // This test is skipped until a stricter pattern is implemented
+    it('should NOT detect 429 as part of a larger number (e.g., 4291)', () => {
       const error = {
         message: 'Request ID: 4291',
       };
@@ -215,8 +215,14 @@ describe('ErrorPatternRegistry', () => {
       ];
 
       for (const error of errors) {
-        expect(registry.isRateLimitError(error)).toBe(true);
+        expect(registry.isRateLimitError(error, 'anthropic')).toBe(true);
       }
+    });
+
+    it('should preserve built-in provider detection when no provider hint is available', () => {
+      expect(registry.isRateLimitError({ message: 'Service is overloaded' })).toBe(true);
+      expect(registry.isRateLimitError({ message: 'resource exhausted' })).toBe(true);
+      expect(registry.isRateLimitError({ message: 'insufficient_quota' })).toBe(true);
     });
 
     it('should detect Google/Gemini-specific rate limit messages', () => {
@@ -229,7 +235,7 @@ describe('ErrorPatternRegistry', () => {
       ];
 
       for (const error of errors) {
-        expect(registry.isRateLimitError(error)).toBe(true);
+        expect(registry.isRateLimitError(error, 'google')).toBe(true);
       }
     });
 
@@ -243,7 +249,7 @@ describe('ErrorPatternRegistry', () => {
       ];
 
       for (const error of errors) {
-        expect(registry.isRateLimitError(error)).toBe(true);
+        expect(registry.isRateLimitError(error, 'openai')).toBe(true);
       }
     });
 
@@ -431,6 +437,19 @@ describe('ErrorPatternRegistry', () => {
       expect(() => registry.replaceCustomPatterns([null, {}] as any)).not.toThrow();
       expect(registry.isRateLimitError({ message: 'unrelated provider failure' })).toBe(false);
     });
+
+    it('normalizes provider whitespace when matching custom patterns', () => {
+      registry.replaceCustomPatterns([{
+        name: 'provider-capacity',
+        provider: ' Provider-X ',
+        patterns: ['provider-capacity-e42'],
+        priority: 95,
+      }]);
+
+      expect(registry.isRateLimitError({ message: 'provider-capacity-e42' }, 'provider-x')).toBe(true);
+      expect(registry.isRateLimitError({ message: 'provider-capacity-e42' }, 'provider-y')).toBe(false);
+      expect(registry.isRateLimitError({ message: 'provider-capacity-e42' })).toBe(false);
+    });
   });
 
   describe('updateLearnedPatterns()', () => {
@@ -448,6 +467,22 @@ describe('ErrorPatternRegistry', () => {
 
       expect(registry.getLearnedPatterns()).toEqual([valid]);
       expect(registry.isRateLimitError({ message: 'learned capacity signal' })).toBe(true);
+    });
+
+    it('should retain low-confidence entries for review without using them for detection', () => {
+      const lowConfidence = {
+        name: 'learned-low-confidence',
+        patterns: ['uncertain-capacity-signal'],
+        priority: 70,
+        confidence: 0.7,
+        learnedAt: '2026-08-12T00:00:00.000Z',
+        sampleCount: 3,
+      };
+
+      registry.updateLearnedPatterns([lowConfidence]);
+
+      expect(registry.getLearnedPatterns()).toEqual([lowConfidence]);
+      expect(registry.isRateLimitError({ message: 'uncertain-capacity-signal' })).toBe(false);
     });
   });
 
@@ -602,6 +637,140 @@ describe('ErrorPatternRegistry', () => {
       registry.configurePatternLearning({ ...learningConfig, enabled: true });
       expect(registry.getPatternLearner()).toBe(learner);
       expect(registry.isLearningEnabled()).toBe(true);
+    });
+
+    it('should enforce a lowered learned-pattern limit immediately', () => {
+      registry.configurePatternLearning({ ...learningConfig, maxLearnedPatterns: 3 });
+      registry.updateLearnedPatterns([
+        {
+          name: 'learned-low',
+          patterns: ['vendor-low-capacity'],
+          priority: 70,
+          confidence: 0.8,
+          learnedAt: '2026-08-12T00:00:00.000Z',
+          sampleCount: 20,
+        },
+        {
+          name: 'learned-high-fewer-samples',
+          patterns: ['vendor-high-fewer'],
+          priority: 70,
+          confidence: 0.95,
+          learnedAt: '2026-08-12T00:00:00.000Z',
+          sampleCount: 2,
+        },
+        {
+          name: 'learned-high-more-samples',
+          patterns: ['vendor-high-more'],
+          priority: 70,
+          confidence: 0.95,
+          learnedAt: '2026-08-12T00:00:00.000Z',
+          sampleCount: 5,
+        },
+      ]);
+
+      registry.configurePatternLearning({ ...learningConfig, maxLearnedPatterns: 1 });
+
+      expect(registry.getLearnedPatterns().map(pattern => pattern.name))
+        .toEqual(['learned-high-more-samples']);
+      expect(registry.isRateLimitError({ message: 'vendor-high-more' })).toBe(true);
+      expect(registry.isRateLimitError({ message: 'vendor-high-fewer' })).toBe(false);
+    });
+
+    it('should persist, activate, and provider-scope a learned pattern immediately', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'pattern-registry-learning-'));
+      const configPath = join(directory, 'rate-limit-fallback.json');
+      writeFileSync(configPath, JSON.stringify({ errorPatterns: { enableLearning: true } }));
+
+      try {
+        registry.configurePatternLearning({
+          ...learningConfig,
+          enabled: true,
+          autoApproveThreshold: 0,
+          minErrorFrequency: 2,
+        }, configPath);
+        const error = { message: 'burst_window_throttled' };
+
+        expect(registry.isRateLimitError(error, 'provider-x')).toBe(false);
+        expect(await registry.learnFromError(error, 'provider-x')).toBeNull();
+        expect(await registry.learnFromError(error, 'provider-x')).not.toBeNull();
+
+        expect(registry.isRateLimitError(error, 'provider-x')).toBe(true);
+        expect(registry.isRateLimitError(error, 'provider-y')).toBe(false);
+        expect(registry.isRateLimitError(error)).toBe(false);
+        expect(registry.isRateLimitError(
+          { message: `provider-x: ${error.message}` },
+        )).toBe(true);
+        const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+        expect(saved.errorPatterns.learnedPatterns).toHaveLength(1);
+        expect(saved.errorPatterns.learnedPatterns[0].provider).toBe('provider-x');
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
+    it('should count live matches of learned patterns', () => {
+      const metricsSink = {
+        recordPatternErrorProcessed: vi.fn(),
+        recordPatternLearned: vi.fn(),
+        recordPatternRejected: vi.fn(),
+        recordPatternPersistenceFailure: vi.fn(),
+        recordLearnedPatternMatch: vi.fn(),
+      };
+      registry.setPatternLearningMetricsSink(metricsSink);
+      registry.updateLearnedPatterns([{
+        name: 'learned-provider-capacity',
+        provider: 'provider-x',
+        patterns: ['vendor-capacity-e42'],
+        priority: 70,
+        confidence: 0.9,
+        learnedAt: '2026-08-12T00:00:00.000Z',
+        sampleCount: 3,
+      }]);
+
+      expect(registry.isRateLimitError({ message: 'vendor-capacity-e42' }, 'provider-x')).toBe(true);
+      expect(metricsSink.recordLearnedPatternMatch).toHaveBeenCalledOnce();
+    });
+
+    it('should promote an inactive same-provider pattern after new observations', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'pattern-registry-promotion-'));
+      const configPath = join(directory, 'rate-limit-fallback.json');
+      const inactivePattern = {
+        name: 'learned-provider-x-throttle',
+        provider: 'provider-x',
+        patterns: ['burst_window_throttled', 'throttled'],
+        priority: 70,
+        confidence: 0.7,
+        learnedAt: '2026-08-12T00:00:00.000Z',
+        sampleCount: 1,
+      };
+      writeFileSync(configPath, JSON.stringify({
+        errorPatterns: {
+          enableLearning: true,
+          learnedPatterns: [inactivePattern],
+        },
+      }));
+
+      try {
+        registry.updateLearnedPatterns([inactivePattern]);
+        registry.configurePatternLearning({
+          ...learningConfig,
+          enabled: true,
+          autoApproveThreshold: 0.8,
+          minErrorFrequency: 1,
+        }, configPath);
+        const error = { message: 'burst_window_throttled' };
+        expect(registry.isRateLimitError(error, 'provider-x')).toBe(false);
+
+        expect(await registry.learnFromError(error, 'provider-x')).not.toBeNull();
+
+        const promoted = registry.getLearnedPatterns();
+        expect(promoted).toHaveLength(1);
+        expect(promoted[0].confidence).toBeGreaterThan(0.7);
+        expect(promoted[0].sampleCount).toBe(2);
+        expect(registry.isRateLimitError(error, 'provider-x')).toBe(true);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
     });
   });
 

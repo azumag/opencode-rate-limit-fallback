@@ -5,11 +5,12 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
-import { createLogger, type LogSink } from "./logger.js";
+import { createLogger, type Logger, type LogSink } from "./logger.js";
 
 // Import modular components
 import type {
   MessageUpdatedEventProperties,
+  PluginConfig,
   SessionCreatedEventProperties,
   SessionErrorEventProperties,
   SessionStatusEventProperties,
@@ -56,6 +57,44 @@ function getObjectDiff<T extends Record<string, unknown>>(obj1: T, obj2: T): str
   }
 
   return diffs;
+}
+
+function initializeErrorPatternRegistry(
+  config: PluginConfig,
+  configSource: string | null,
+  logger: Logger,
+): ErrorPatternRegistry {
+  const registry = new ErrorPatternRegistry(logger, config.errorPatterns?.ignorePatterns);
+  registry.replaceCustomPatterns(config.errorPatterns?.custom ?? []);
+
+  const patternLearningConfig = {
+    enabled: Boolean(config.errorPatterns?.enableLearning && configSource),
+    autoApproveThreshold: config.errorPatterns?.autoApproveThreshold ?? 0.8,
+    maxLearnedPatterns: config.errorPatterns?.maxLearnedPatterns ?? 20,
+    minErrorFrequency: config.errorPatterns?.minErrorFrequency ?? 3,
+    learningWindowMs: config.errorPatterns?.learningWindowMs ?? 86400000,
+  };
+  registry.configurePatternLearning(patternLearningConfig, configSource ?? undefined);
+  registry.updateLearnedPatterns(config.errorPatterns?.learnedPatterns ?? []);
+
+  if (patternLearningConfig.enabled) {
+    logger.info('Pattern learning enabled');
+  }
+
+  return registry;
+}
+
+function observeErrorForPatternLearning(
+  registry: ErrorPatternRegistry,
+  logger: Logger,
+  error: unknown,
+  providerHint?: string,
+): void {
+  void registry.learnFromError(error, providerHint).catch((learningError) => {
+    logger.debug('Pattern learning failed', {
+      error: learningError instanceof Error ? learningError.message : String(learningError),
+    });
+  });
 }
 
 // ============================================================================
@@ -219,13 +258,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       logger.info("Headless mode — will abort session on rate limit");
 
       // Minimal setup: only error pattern detection + abort
-      const errorPatternRegistry = new ErrorPatternRegistry(logger, config.errorPatterns?.ignorePatterns);
-      if (config.errorPatterns?.custom) {
-        errorPatternRegistry.replaceCustomPatterns(config.errorPatterns.custom);
-      }
-      if (config.errorPatterns?.learnedPatterns) {
-        errorPatternRegistry.updateLearnedPatterns(config.errorPatterns.learnedPatterns);
-      }
+      const errorPatternRegistry = initializeErrorPatternRegistry(config, configSource, logger);
 
       // Track sessions already aborted to avoid duplicate abort calls
       const abortedSessions = new Set<string>();
@@ -247,15 +280,27 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
         event: async ({ event }) => {
           if (isSessionErrorEvent(event)) {
             const { sessionID, error } = event.properties;
-            if (sessionID && error && errorPatternRegistry.isRateLimitError(error)) {
-              await abortSession(sessionID, "session.error");
+            if (sessionID && error) {
+              const classification = errorPatternRegistry.classifyError(error);
+              if (classification !== 'ignored') {
+                observeErrorForPatternLearning(errorPatternRegistry, logger, error);
+              }
+              if (classification === 'rate-limit') {
+                await abortSession(sessionID, "session.error");
+              }
             }
           }
 
           if (isMessageUpdatedEvent(event)) {
             const info = event.properties.info;
-            if (info?.error && errorPatternRegistry.isRateLimitError(info.error)) {
-              await abortSession(info.sessionID, "message.updated");
+            if (info?.error) {
+              const classification = errorPatternRegistry.classifyError(info.error, info.providerID);
+              if (classification !== 'ignored') {
+                observeErrorForPatternLearning(errorPatternRegistry, logger, info.error, info.providerID);
+              }
+              if (classification === 'rate-limit') {
+                await abortSession(info.sessionID, "message.updated");
+              }
             }
           }
 
@@ -263,7 +308,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
             const props = event.properties;
             const status = props?.status;
             if (status?.type === "retry" && status?.message) {
-              if (errorPatternRegistry.isRateLimitError({ message: status.message })) {
+              const statusError = { message: status.message };
+              const classification = errorPatternRegistry.classifyError(statusError);
+              if (classification !== 'ignored') {
+                observeErrorForPatternLearning(errorPatternRegistry, logger, statusError);
+              }
+              if (classification === 'rate-limit') {
                 await abortSession(props.sessionID, "session.status retry");
               }
             }
@@ -277,26 +327,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
   }
 
   // Initialize error pattern registry
-  const errorPatternRegistry = new ErrorPatternRegistry(logger, config.errorPatterns?.ignorePatterns);
-  if (config.errorPatterns?.custom) {
-    errorPatternRegistry.replaceCustomPatterns(config.errorPatterns.custom);
-  }
-  if (config.errorPatterns?.learnedPatterns) {
-    errorPatternRegistry.updateLearnedPatterns(config.errorPatterns.learnedPatterns);
-  }
-
-  // Initialize pattern learning if enabled
-  if (config.errorPatterns?.enableLearning && configSource) {
-    const patternLearningConfig = {
-      enabled: config.errorPatterns.enableLearning,
-      autoApproveThreshold: config.errorPatterns.autoApproveThreshold ?? 0.8,
-      maxLearnedPatterns: config.errorPatterns.maxLearnedPatterns ?? 20,
-      minErrorFrequency: config.errorPatterns.minErrorFrequency ?? 3,
-      learningWindowMs: config.errorPatterns.learningWindowMs ?? 86400000,
-    };
-    errorPatternRegistry.initializePatternLearning(patternLearningConfig, configSource);
-    logger.info('Pattern learning enabled');
-  }
+  const errorPatternRegistry = initializeErrorPatternRegistry(config, configSource, logger);
 
   // Initialize health tracker
   let healthTracker: HealthTracker | undefined;
@@ -324,6 +355,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
   const subagentTracker = new SubagentTracker(config);
 
   const metricsManager = new MetricsManager(config.metrics ?? { enabled: false, output: { console: true, format: "pretty" }, resetInterval: "daily" }, logger);
+  errorPatternRegistry.setPatternLearningMetricsSink(metricsManager);
 
   const fallbackHandler = new FallbackHandler(config, client, logger, metricsManager, subagentTracker, healthTracker);
 
@@ -382,15 +414,15 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       // Handle session.error events
       if (isSessionErrorEvent(event)) {
         const { sessionID, error } = event.properties;
-        if (sessionID && error && errorPatternRegistry.isRateLimitError(error)) {
-          // Learn from this error if pattern learning is enabled
-          const patternLearner = errorPatternRegistry.getPatternLearner();
-          if (patternLearner) {
-            patternLearner.processError(error).catch((err) => {
-              logger.debug('Pattern learning failed', { error: err });
-            });
+        if (sessionID && error) {
+          const providerHint = fallbackHandler.getSessionModel(sessionID)?.providerID;
+          const classification = errorPatternRegistry.classifyError(error, providerHint);
+          if (classification !== 'ignored') {
+            observeErrorForPatternLearning(errorPatternRegistry, logger, error, providerHint);
           }
-          await fallbackHandler.handleRateLimitFallback(sessionID, "", "");
+          if (classification === 'rate-limit') {
+            await fallbackHandler.handleRateLimitFallback(sessionID, "", "");
+          }
         }
       }
 
@@ -398,7 +430,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       if (isMessageUpdatedEvent(event)) {
         const info = event.properties.info;
         const errorClassification = info?.error
-          ? errorPatternRegistry.classifyError(info.error)
+          ? errorPatternRegistry.classifyError(info.error, info.providerID)
           : null;
 
         // Track model info for all assistant messages (needed to identify current model on session.error)
@@ -406,14 +438,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
           fallbackHandler.setSessionModel(info.sessionID, info.providerID, info.modelID);
         }
 
+        if (info?.error && errorClassification !== 'ignored') {
+          const providerHint = info.providerID || fallbackHandler.getSessionModel(info.sessionID)?.providerID;
+          observeErrorForPatternLearning(errorPatternRegistry, logger, info.error, providerHint);
+        }
+
         if (info?.error && errorClassification === 'rate-limit') {
-          // Learn from this error if pattern learning is enabled
-          const patternLearner = errorPatternRegistry.getPatternLearner();
-          if (patternLearner) {
-            patternLearner.processError(info.error).catch((err) => {
-              logger.debug('Pattern learning failed', { error: err });
-            });
-          }
           await fallbackHandler.handleRateLimitFallback(info.sessionID, info.providerID || "", info.modelID || "");
         } else if (info?.status === "completed" && !info?.error && info?.id) {
           // Record fallback success
@@ -430,7 +460,13 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
         const status = props?.status;
 
         if (status?.type === "retry" && status?.message) {
-          if (errorPatternRegistry.isRateLimitError({ message: status.message })) {
+          const statusError = { message: status.message };
+          const providerHint = fallbackHandler.getSessionModel(props.sessionID)?.providerID;
+          const classification = errorPatternRegistry.classifyError(statusError, providerHint);
+          if (classification !== 'ignored') {
+            observeErrorForPatternLearning(errorPatternRegistry, logger, statusError, providerHint);
+          }
+          if (classification === 'rate-limit') {
             // Try fallback on any attempt, handleRateLimitFallback will manage state
             await fallbackHandler.handleRateLimitFallback(props.sessionID, "", "");
           }

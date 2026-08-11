@@ -172,10 +172,6 @@ export class ConfigReloader {
       this.components.errorPatternRegistry.replaceCustomPatterns(customPatterns);
       this.logger.info(`Reloaded ${customPatterns.length} custom error patterns`);
 
-      const learnedPatterns = newConfig.errorPatterns?.learnedPatterns ?? [];
-      this.components.errorPatternRegistry.updateLearnedPatterns(learnedPatterns);
-      this.logger.info(`Reloaded ${learnedPatterns.length} learned patterns`);
-
       const ignorePatterns = newConfig.errorPatterns?.ignorePatterns ?? DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns;
       this.components.errorPatternRegistry.registerIgnorePatterns(ignorePatterns);
       this.logger.info(`Reloaded ${ignorePatterns.length} ignore patterns`);
@@ -191,6 +187,10 @@ export class ConfigReloader {
         patternLearningConfig,
         configSource ?? this.configPath ?? undefined,
       );
+
+      const learnedPatterns = newConfig.errorPatterns?.learnedPatterns ?? [];
+      this.components.errorPatternRegistry.updateLearnedPatterns(learnedPatterns);
+      this.logger.info(`Reloaded ${Math.min(learnedPatterns.length, patternLearningConfig.maxLearnedPatterns)} learned patterns`);
     }
 
     // Update the remaining components only after pattern settings have been

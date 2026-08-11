@@ -29,20 +29,41 @@ const STATUS_CODE_PATTERNS = [
  * Pre-defined rate limit phrase patterns
  */
 const RATE_LIMIT_PHRASE_PATTERNS = [
-  /(?:rate.?limit|quota|exceed|too.?many.?requests|throttl)/gi,
+  /\b(?:rate[ _-]?limit(?:ed)?|quota[ _-](?:exceeded|exhausted)|too[ _-]?many[ _-]?requests|throttl(?:e|ed|ing)|resource[ _-]?exhausted|(?:daily|request)[ _-]limit[ _-](?:exceeded|reached|exhausted))\b/gi,
 ] as const;
 
 /**
  * Pre-defined API error code patterns
  */
 const ERROR_CODE_PATTERNS = [
-  /\b(?:insufficient_quota|resource_exhausted|rate_limit_error|quota_exceeded|over_quota)\b/gi,
+  /\b(?:[a-z0-9]+[_-])*(?:rate[_-]?limit|quota|throttl(?:e|ed|ing)?|resource[_-]exhausted|too[_-]many[_-]requests)(?:[_-][a-z0-9]+)*\b/gi,
 ] as const;
 
 /**
  * Minimum length for pattern strings
  */
 const MIN_PATTERN_LENGTH = 3;
+
+const QUOTA_DEPLETION_TOKENS = new Set([
+  'depleted',
+  'exceeded',
+  'exhausted',
+  'insufficient',
+  'over',
+  'reached',
+  'spent',
+]);
+
+function containsIdentifier(text: string, identifier: string): boolean {
+  const escaped = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^a-z0-9_-])${escaped}([^a-z0-9_-]|$)`, 'i').test(text);
+}
+
+function hasQuotaDepletionSemantics(code: string): boolean {
+  const tokens = code.split(/[_-]+/);
+  return !tokens.includes('quota') ||
+    tokens.some(token => QUOTA_DEPLETION_TOKENS.has(token));
+}
 
 /**
  * Pattern Extractor class
@@ -98,11 +119,16 @@ export class PatternExtractor {
   /**
    * Extract provider ID from error text
    */
-  private extractProvider(textSources: string[]): string | null {
+  private extractProvider(textSources: string[], providerHint?: string): string | null {
+    const normalizedHint = providerHint?.trim().toLowerCase();
+    if (normalizedHint) {
+      return normalizedHint;
+    }
+
     for (const text of textSources) {
       const lowerText = text.toLowerCase();
       for (const provider of KNOWN_PROVIDERS) {
-        if (lowerText.includes(provider)) {
+        if (containsIdentifier(lowerText, provider)) {
           return provider;
         }
       }
@@ -144,14 +170,15 @@ export class PatternExtractor {
       'too many requests',
       'quota exceeded',
       'rate limit exceeded',
-      'quota limit',
       'insufficient quota',
       'rate limited',
       'rate-limited',
       'throttled',
       'resource exhausted',
-      'daily limit',
-      'request limit',
+      'daily limit exceeded',
+      'daily limit reached',
+      'request limit exceeded',
+      'request limit reached',
     ];
 
     for (const text of lowerTextSources) {
@@ -175,21 +202,6 @@ export class PatternExtractor {
       }
     }
 
-    // Extract error codes (these go in errorCodes, not phrases)
-    // But we also add them to phrases for now
-    for (const text of lowerTextSources) {
-      for (const pattern of ERROR_CODE_PATTERNS) {
-        pattern.lastIndex = 0;
-        const matches = text.matchAll(pattern);
-        for (const match of matches) {
-          const errorCode = match[0].toLowerCase();
-          if (errorCode.length >= MIN_PATTERN_LENGTH) {
-            phrases.add(errorCode);
-          }
-        }
-      }
-    }
-
     return Array.from(phrases);
   }
 
@@ -205,7 +217,12 @@ export class PatternExtractor {
         const matches = text.matchAll(pattern);
         for (const match of matches) {
           const code = match[0].toLowerCase();
-          errorCodes.add(code);
+          // Structured error codes have separators. Plain words such as
+          // "quota" are too broad to become future detection patterns.
+          if ((code.includes('_') || code.includes('-')) &&
+              hasQuotaDepletionSemantics(code)) {
+            errorCodes.add(code);
+          }
         }
       }
     }
@@ -216,7 +233,7 @@ export class PatternExtractor {
   /**
    * Extract pattern candidates from an error
    */
-  extractPattern(error: unknown): PatternCandidate | null {
+  extractPattern(error: unknown, providerHint?: string): PatternCandidate | null {
     if (!this.isValidErrorObject(error)) {
       return null;
     }
@@ -226,7 +243,7 @@ export class PatternExtractor {
       return null;
     }
 
-    const provider = this.extractProvider(textSources);
+    const provider = this.extractProvider(textSources, providerHint);
     const statusCodes = this.extractStatusCodes(textSources);
     const phrases = this.extractPhrases(textSources);
     const errorCodes = this.extractErrorCodes(textSources);

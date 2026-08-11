@@ -4,7 +4,19 @@
 
 import type { LearnedPattern, PatternLearningConfig, ErrorPattern } from '../types/index.js';
 import { calculateJaccardSimilarity } from '../utils/similarity.js';
+import { isValidLearnedPattern } from '../config/patternValidation.js';
 import * as fs from 'fs/promises';
+import { basename, dirname, join } from 'path';
+
+const LOCK_RETRY_DELAY_MS = 25;
+const LOCK_MAX_ATTEMPTS = 200;
+const LOCK_STALE_MS = 30000;
+
+interface ConfigLock {
+  handle: fs.FileHandle;
+  lockPath: string;
+  token: string;
+}
 
 /**
  * Pattern Storage class
@@ -33,6 +45,10 @@ export class PatternStorage {
    */
   setConfigFilePath(path: string): void {
     this.configFilePath = path;
+  }
+
+  hasConfigFilePath(): boolean {
+    return this.configFilePath !== null;
   }
 
   /**
@@ -67,6 +83,10 @@ export class PatternStorage {
         }
 
         const otherPattern = patterns[j];
+        if ((currentPattern.provider?.trim().toLowerCase() ?? null) !==
+            (otherPattern.provider?.trim().toLowerCase() ?? null)) {
+          continue;
+        }
         const currentStr = currentPattern.patterns.map(p => String(p)).join(' ');
         const otherStr = otherPattern.patterns.map(p => String(p)).join(' ');
 
@@ -126,30 +146,45 @@ export class PatternStorage {
   /**
    * Save learned patterns to config file
    */
-  async saveLearnedPatterns(patterns: LearnedPattern[]): Promise<void> {
-    if (!this.configFilePath) {
-      return; // No config file set, skip saving
+  async saveLearnedPatterns(patterns: LearnedPattern[]): Promise<boolean> {
+    const targetPath = await this.resolveConfigFilePath();
+    if (!targetPath) {
+      return false;
     }
 
     try {
-      // Read the existing config
-      const configData = JSON.parse(await fs.readFile(this.configFilePath, 'utf-8'));
+      return await this.withConfigLock(targetPath, async () => {
+        const configData = await this.readConfigData(targetPath);
+        await this.writeConfigData(targetPath, configData, patterns);
+        return true;
+      });
+    } catch {
+      return false;
+    }
+  }
 
-      // Update the learned patterns
-      if (!configData.errorPatterns) {
-        configData.errorPatterns = {};
-      }
-      configData.errorPatterns.learnedPatterns = patterns;
+  /**
+   * Add patterns with a lock-protected read-modify-write transaction.
+   */
+  async appendLearnedPatterns(patterns: LearnedPattern[]): Promise<LearnedPattern[] | null> {
+    const validIncoming = patterns.filter(isValidLearnedPattern);
+    const targetPath = await this.resolveConfigFilePath();
+    if (!targetPath) {
+      return this.cleanupPatterns(this.mergeSimilarPatterns(validIncoming));
+    }
 
-      // Write back to file
-      await fs.writeFile(
-        this.configFilePath,
-        JSON.stringify(configData, null, 2),
-        'utf-8'
-      );
-    } catch (error) {
-      // Silently handle save errors - pattern learning is a best-effort feature
-      // Errors will be logged by the caller if needed
+    try {
+      return await this.withConfigLock(targetPath, async () => {
+        const configData = await this.readConfigData(targetPath);
+        const existing = this.extractLearnedPatterns(configData);
+        const finalPatterns = this.cleanupPatterns(
+          this.mergeSimilarPatterns([...existing, ...validIncoming]),
+        );
+        await this.writeConfigData(targetPath, configData, finalPatterns);
+        return finalPatterns;
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -157,51 +192,17 @@ export class PatternStorage {
    * Validate and load learned patterns from config
    */
   async loadLearnedPatterns(): Promise<LearnedPattern[]> {
-    if (!this.configFilePath) {
+    const targetPath = await this.resolveConfigFilePath();
+    if (!targetPath) {
       return [];
     }
 
     try {
-      const configData = JSON.parse(await fs.readFile(this.configFilePath, 'utf-8'));
-      const learnedPatterns = configData.errorPatterns?.learnedPatterns;
-
-      if (!Array.isArray(learnedPatterns)) {
-        return [];
-      }
-
-      // Validate each pattern
-      const validPatterns: LearnedPattern[] = [];
-      for (const pattern of learnedPatterns) {
-        if (this.isValidLearnedPattern(pattern)) {
-          validPatterns.push(pattern);
-        }
-      }
-
-      return validPatterns;
+      return this.extractLearnedPatterns(await this.readConfigData(targetPath));
     } catch {
       // File doesn't exist or is invalid
       return [];
     }
-  }
-
-  /**
-   * Validate a learned pattern object
-   */
-  private isValidLearnedPattern(pattern: unknown): pattern is LearnedPattern {
-    if (!pattern || typeof pattern !== 'object') {
-      return false;
-    }
-
-    const p = pattern as Record<string, unknown>;
-    return (
-      typeof p.name === 'string' &&
-      typeof p.confidence === 'number' &&
-      typeof p.learnedAt === 'string' &&
-      typeof p.sampleCount === 'number' &&
-      typeof p.priority === 'number' &&
-      Array.isArray(p.patterns) &&
-      p.patterns.every((pt: unknown) => typeof pt === 'string' || pt instanceof RegExp)
-    );
   }
 
   /**
@@ -218,5 +219,132 @@ export class PatternStorage {
       learnedAt: new Date().toISOString(),
       sampleCount,
     };
+  }
+
+  private async resolveConfigFilePath(): Promise<string | null> {
+    if (!this.configFilePath) {
+      return null;
+    }
+
+    try {
+      const resolved = await fs.realpath(this.configFilePath);
+      return typeof resolved === 'string' && resolved.length > 0
+        ? resolved
+        : this.configFilePath;
+    } catch {
+      return this.configFilePath;
+    }
+  }
+
+  private async readConfigData(targetPath: string): Promise<Record<string, any>> {
+    const parsed = JSON.parse(await fs.readFile(targetPath, 'utf-8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Configuration root must be an object');
+    }
+    return parsed as Record<string, any>;
+  }
+
+  private extractLearnedPatterns(configData: Record<string, any>): LearnedPattern[] {
+    const learnedPatterns = configData.errorPatterns?.learnedPatterns;
+    return Array.isArray(learnedPatterns)
+      ? learnedPatterns.filter(isValidLearnedPattern)
+      : [];
+  }
+
+  private async writeConfigData(
+    targetPath: string,
+    configData: Record<string, any>,
+    patterns: LearnedPattern[],
+  ): Promise<void> {
+    if (configData.errorPatterns !== undefined &&
+        (!configData.errorPatterns || typeof configData.errorPatterns !== 'object' ||
+         Array.isArray(configData.errorPatterns))) {
+      throw new Error('errorPatterns must be an object');
+    }
+    configData.errorPatterns ??= {};
+    configData.errorPatterns.learnedPatterns = patterns;
+
+    const tempPath = join(
+      dirname(targetPath),
+      `.${basename(targetPath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+    );
+    try {
+      await fs.writeFile(
+        tempPath,
+        JSON.stringify(configData, null, 2),
+        { encoding: 'utf-8', mode: 0o600 },
+      );
+      await fs.rename(tempPath, targetPath);
+    } catch (error) {
+      try {
+        await fs.unlink(tempPath);
+      } catch {
+        // The temporary file may not have been created.
+      }
+      throw error;
+    }
+  }
+
+  private async withConfigLock<T>(targetPath: string, operation: () => Promise<T>): Promise<T> {
+    const lockPath = join(dirname(targetPath), `.${basename(targetPath)}.pattern-learning.lock`);
+    const lock = await this.acquireConfigLock(lockPath);
+    try {
+      return await operation();
+    } finally {
+      try {
+        await lock.handle.close();
+      } finally {
+        try {
+          const currentToken = await fs.readFile(lock.lockPath, 'utf-8');
+          if (currentToken === lock.token) {
+            await fs.unlink(lock.lockPath);
+          }
+        } catch {
+          // A stale-lock cleanup may already have removed it.
+        }
+      }
+    }
+  }
+
+  private async acquireConfigLock(lockPath: string): Promise<ConfigLock> {
+    for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
+      try {
+        const handle = await fs.open(lockPath, 'wx', 0o600);
+        const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+        try {
+          await handle.writeFile(token, 'utf-8');
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          await fs.unlink(lockPath).catch(() => undefined);
+          throw error;
+        }
+        return { handle, lockPath, token };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'EEXIST') {
+          throw error;
+        }
+
+        try {
+          const staleToken = await fs.readFile(lockPath, 'utf-8');
+          const lockStat = await fs.stat(lockPath);
+          if (Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) {
+            const currentToken = await fs.readFile(lockPath, 'utf-8');
+            if (currentToken === staleToken) {
+              await fs.unlink(lockPath);
+            }
+            continue;
+          }
+        } catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code === 'ENOENT') {
+            continue;
+          }
+        }
+
+        await new Promise(resolve => setTimeout(resolve, LOCK_RETRY_DELAY_MS));
+      }
+    }
+
+    throw new Error(`Timed out waiting for pattern learning lock: ${lockPath}`);
   }
 }

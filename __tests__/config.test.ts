@@ -102,6 +102,46 @@ describe('config utilities', () => {
     expect(config.errorPatterns?.learnedPatterns).toEqual([validLearned]);
   });
 
+  it('normalizes invalid pattern learning settings to safe defaults', () => {
+    const config = validateConfig({
+      errorPatterns: {
+        enableLearning: 'yes',
+        autoApproveThreshold: 2,
+        maxLearnedPatterns: 0,
+        minErrorFrequency: -1,
+        learningWindowMs: Number.POSITIVE_INFINITY,
+      },
+    } as unknown as Partial<PluginConfig>);
+
+    expect(config.errorPatterns).toEqual(expect.objectContaining({
+      enableLearning: false,
+      autoApproveThreshold: 0.8,
+      maxLearnedPatterns: 20,
+      minErrorFrequency: 3,
+      learningWindowMs: 86400000,
+    }));
+  });
+
+  it('preserves valid pattern learning settings', () => {
+    const config = validateConfig({
+      errorPatterns: {
+        enableLearning: true,
+        autoApproveThreshold: 0.65,
+        maxLearnedPatterns: 12,
+        minErrorFrequency: 4,
+        learningWindowMs: 60000,
+      },
+    });
+
+    expect(config.errorPatterns).toEqual(expect.objectContaining({
+      enableLearning: true,
+      autoApproveThreshold: 0.65,
+      maxLearnedPatterns: 12,
+      minErrorFrequency: 4,
+      learningWindowMs: 60000,
+    }));
+  });
+
   it('normalizes invalid subagent settings to safe defaults', () => {
     const config = validateConfig({
       maxSubagentDepth: 0,

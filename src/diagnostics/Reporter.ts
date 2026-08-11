@@ -4,7 +4,7 @@
  */
 
 import { Logger } from '../../logger.js';
-import type { PluginConfig, ModelHealth, LearnedPattern } from '../types/index.js';
+import type { PluginConfig, ModelHealth, LearnedPattern, PatternLearningStats } from '../types/index.js';
 import type { HealthTracker } from '../health/HealthTracker.js';
 import type { CircuitBreaker } from '../circuitbreaker/index.js';
 import { ErrorPatternRegistry } from '../errors/PatternRegistry.js';
@@ -65,6 +65,10 @@ export interface DiagnosticReport {
       byPriority: Record<string, number>;
     };
     learnedPatterns: LearnedPattern[];
+    learning: {
+      enabled: boolean;
+      stats: PatternLearningStats;
+    };
   };
   circuitBreaker: {
     enabled: boolean;
@@ -162,9 +166,19 @@ export class DiagnosticReporter {
    * Generate error pattern registry report
    */
   private generateErrorPatternsReport() {
+    const patternLearner = this.errorPatternRegistry.getPatternLearner();
     return {
       stats: this.errorPatternRegistry.getStats(),
       learnedPatterns: this.errorPatternRegistry.getLearnedPatterns(),
+      learning: {
+        enabled: this.errorPatternRegistry.isLearningEnabled(),
+        stats: patternLearner?.getStats() ?? {
+          totalErrorsProcessed: 0,
+          patternsLearned: 0,
+          patternsRejected: 0,
+          persistenceFailures: 0,
+        },
+      },
     };
   }
 
@@ -314,6 +328,11 @@ export class DiagnosticReporter {
     lines.push(`Total Patterns: ${patternStats.total}`);
     lines.push(`Default Patterns: ${patternStats.default || 0}`);
     lines.push(`Learned Patterns: ${patternStats.learned || 0}`);
+    lines.push(`Learning Enabled: ${report.errorPatterns.learning.enabled ? 'Yes' : 'No'}`);
+    lines.push(`Learning Errors Processed: ${report.errorPatterns.learning.stats.totalErrorsProcessed}`);
+    lines.push(`Learning Accepted: ${report.errorPatterns.learning.stats.patternsLearned}`);
+    lines.push(`Learning Rejected: ${report.errorPatterns.learning.stats.patternsRejected}`);
+    lines.push(`Learning Persistence Failures: ${report.errorPatterns.learning.stats.persistenceFailures}`);
     lines.push('');
 
     if (Object.keys(patternStats.byProvider).length > 0) {

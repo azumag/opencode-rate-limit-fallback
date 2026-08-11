@@ -34,6 +34,14 @@ describe('MetricsManager', () => {
       expect(metrics.fallbacks.total).toBe(0);
       expect(metrics.retries.total).toBe(0);
       expect(metrics.modelPerformance).toBeInstanceOf(Map);
+      expect(metrics.patternLearning).toEqual({
+        totalErrorsProcessed: 0,
+        patternsLearned: 0,
+        patternsRejected: 0,
+        persistenceFailures: 0,
+        averageConfidence: 0,
+        learnedPatternMatches: 0,
+      });
       expect(metrics.startedAt).toBeGreaterThan(0);
     });
 
@@ -48,6 +56,39 @@ describe('MetricsManager', () => {
       );
 
       expect(manager.getMetrics()).toBeDefined();
+    });
+  });
+
+  describe('Pattern Learning Metrics', () => {
+    it('should track learning outcomes, confidence, and learned-pattern usage', () => {
+      metricsManager.recordPatternErrorProcessed();
+      metricsManager.recordPatternErrorProcessed();
+      metricsManager.recordPatternLearned(0.8);
+      metricsManager.recordPatternLearned(0.9);
+      metricsManager.recordPatternRejected();
+      metricsManager.recordPatternPersistenceFailure();
+      metricsManager.recordLearnedPatternMatch();
+      metricsManager.recordLearnedPatternMatch();
+
+      expect(metricsManager.getMetrics().patternLearning).toEqual({
+        totalErrorsProcessed: 2,
+        patternsLearned: 2,
+        patternsRejected: 1,
+        persistenceFailures: 1,
+        averageConfidence: 0.85,
+        learnedPatternMatches: 2,
+      });
+    });
+
+    it('should include pattern learning in every export format', () => {
+      metricsManager.recordPatternLearned(0.75);
+      metricsManager.recordLearnedPatternMatch();
+
+      expect(JSON.parse(metricsManager.export('json')).patternLearning).toEqual(
+        expect.objectContaining({ averageConfidence: 0.75, learnedPatternMatches: 1 }),
+      );
+      expect(metricsManager.export('pretty')).toContain('Learned Pattern Matches: 1');
+      expect(metricsManager.export('csv')).toContain('average_confidence,learned_pattern_matches');
     });
   });
 
@@ -408,6 +449,8 @@ describe('MetricsManager', () => {
       metricsManager.recordRateLimit('anthropic', 'claude-3-5-sonnet-20250514');
       metricsManager.recordFallbackStart();
       metricsManager.recordFallbackFailure();
+      metricsManager.recordPatternLearned(0.9);
+      metricsManager.recordLearnedPatternMatch();
 
       metricsManager.reset();
 
@@ -416,6 +459,8 @@ describe('MetricsManager', () => {
       expect(metrics.fallbacks.total).toBe(0);
       expect(metrics.retries.total).toBe(0);
       expect(metrics.rateLimits.size).toBe(0);
+      expect(metrics.patternLearning.patternsLearned).toBe(0);
+      expect(metrics.patternLearning.learnedPatternMatches).toBe(0);
       expect(mockLogger.debug).toHaveBeenCalledWith('Metrics reset');
     });
   });
@@ -502,12 +547,18 @@ describe('MetricsManager', () => {
       manager.recordRateLimit('anthropic', 'claude-3-5-sonnet-20250514');
       manager.recordFallbackFailure();
       manager.recordRetryFailure();
+      manager.recordPatternErrorProcessed();
+      manager.recordPatternLearned(0.9);
+      manager.recordLearnedPatternMatch();
 
       const metrics = manager.getMetrics();
 
       expect(metrics.fallbacks.total).toBe(0);
       expect(metrics.retries.total).toBe(0);
       expect(metrics.rateLimits.size).toBe(0);
+      expect(metrics.patternLearning.totalErrorsProcessed).toBe(0);
+      expect(metrics.patternLearning.patternsLearned).toBe(0);
+      expect(metrics.patternLearning.learnedPatternMatches).toBe(0);
     });
 
     it('should handle multiple models with same provider', () => {

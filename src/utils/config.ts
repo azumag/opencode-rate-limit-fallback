@@ -114,6 +114,26 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const learnedPatterns = Array.isArray(errorPatterns?.learnedPatterns)
     ? errorPatterns.learnedPatterns.filter(isValidLearnedPattern)
     : undefined;
+  const enableLearning = typeof errorPatterns?.enableLearning === 'boolean'
+    ? errorPatterns.enableLearning
+    : DEFAULT_PATTERN_LEARNING_CONFIG.enabled;
+  const autoApproveThreshold = typeof errorPatterns?.autoApproveThreshold === 'number' &&
+    Number.isFinite(errorPatterns.autoApproveThreshold) &&
+    errorPatterns.autoApproveThreshold >= 0 && errorPatterns.autoApproveThreshold <= 1
+    ? errorPatterns.autoApproveThreshold
+    : DEFAULT_PATTERN_LEARNING_CONFIG.autoApproveThreshold;
+  const maxLearnedPatterns = Number.isInteger(errorPatterns?.maxLearnedPatterns) &&
+    (errorPatterns?.maxLearnedPatterns ?? 0) > 0
+    ? errorPatterns!.maxLearnedPatterns
+    : DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns;
+  const minErrorFrequency = Number.isInteger(errorPatterns?.minErrorFrequency) &&
+    (errorPatterns?.minErrorFrequency ?? 0) > 0
+    ? errorPatterns!.minErrorFrequency
+    : DEFAULT_PATTERN_LEARNING_CONFIG.minErrorFrequency;
+  const learningWindowMs = typeof errorPatterns?.learningWindowMs === 'number' &&
+    Number.isFinite(errorPatterns.learningWindowMs) && errorPatterns.learningWindowMs > 0
+    ? errorPatterns.learningWindowMs
+    : DEFAULT_PATTERN_LEARNING_CONFIG.learningWindowMs;
 
   return {
     ...DEFAULT_CONFIG,
@@ -164,11 +184,11 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
       custom: customPatterns,
       ignorePatterns,
       learnedPatterns,
-      enableLearning: errorPatterns.enableLearning ?? DEFAULT_PATTERN_LEARNING_CONFIG.enabled,
-      autoApproveThreshold: errorPatterns.autoApproveThreshold ?? DEFAULT_PATTERN_LEARNING_CONFIG.autoApproveThreshold,
-      maxLearnedPatterns: errorPatterns.maxLearnedPatterns ?? DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns,
-      minErrorFrequency: errorPatterns.minErrorFrequency ?? DEFAULT_PATTERN_LEARNING_CONFIG.minErrorFrequency,
-      learningWindowMs: errorPatterns.learningWindowMs ?? DEFAULT_PATTERN_LEARNING_CONFIG.learningWindowMs,
+      enableLearning,
+      autoApproveThreshold,
+      maxLearnedPatterns,
+      minErrorFrequency,
+      learningWindowMs,
     } : DEFAULT_ERROR_PATTERNS_CONFIG,
   };
 }

@@ -576,6 +576,55 @@ export class ConfigValidator {
           }
         }
 
+        if (config.errorPatterns.enableLearning !== undefined &&
+            typeof config.errorPatterns.enableLearning !== 'boolean') {
+          errors.push({
+            path: 'errorPatterns.enableLearning',
+            message: 'enableLearning must be a boolean',
+            severity: 'error',
+            value: config.errorPatterns.enableLearning,
+          });
+        }
+
+        if (config.errorPatterns.autoApproveThreshold !== undefined &&
+            (typeof config.errorPatterns.autoApproveThreshold !== 'number' ||
+             !Number.isFinite(config.errorPatterns.autoApproveThreshold) ||
+             config.errorPatterns.autoApproveThreshold < 0 ||
+             config.errorPatterns.autoApproveThreshold > 1)) {
+          errors.push({
+            path: 'errorPatterns.autoApproveThreshold',
+            message: 'autoApproveThreshold must be a number between 0 and 1',
+            severity: 'error',
+            value: config.errorPatterns.autoApproveThreshold,
+          });
+        }
+
+        for (const [key, value] of [
+          ['maxLearnedPatterns', config.errorPatterns.maxLearnedPatterns],
+          ['minErrorFrequency', config.errorPatterns.minErrorFrequency],
+        ] as const) {
+          if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+            errors.push({
+              path: `errorPatterns.${key}`,
+              message: `${key} must be a positive integer`,
+              severity: 'error',
+              value,
+            });
+          }
+        }
+
+        if (config.errorPatterns.learningWindowMs !== undefined &&
+            (typeof config.errorPatterns.learningWindowMs !== 'number' ||
+             !Number.isFinite(config.errorPatterns.learningWindowMs) ||
+             config.errorPatterns.learningWindowMs <= 0)) {
+          errors.push({
+            path: 'errorPatterns.learningWindowMs',
+            message: 'learningWindowMs must be a positive finite number',
+            severity: 'error',
+            value: config.errorPatterns.learningWindowMs,
+          });
+        }
+
         if (config.errorPatterns.ignorePatterns !== undefined) {
           if (!Array.isArray(config.errorPatterns.ignorePatterns)) {
             errors.push({

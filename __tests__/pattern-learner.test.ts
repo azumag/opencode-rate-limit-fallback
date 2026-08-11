@@ -1,14 +1,27 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { PatternLearner } from '../src/errors/PatternLearner';
 import type { PatternLearningConfig } from '../src/types/index';
 import type { Logger } from '../logger';
+import {
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 describe('PatternLearner', () => {
   let learner: PatternLearner;
   let config: PatternLearningConfig;
   let mockLogger: Logger;
+  let tempDirs: string[];
 
   beforeEach(() => {
+    tempDirs = [];
     config = {
       enabled: true,
       autoApproveThreshold: 0.8,
@@ -25,6 +38,14 @@ describe('PatternLearner', () => {
     } as unknown as Logger;
 
     learner = new PatternLearner(config, mockLogger);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    for (const directory of tempDirs) {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   describe('updateConfig()', () => {
@@ -77,6 +98,16 @@ describe('PatternLearner', () => {
       };
 
       const result = await learner.processError(error);
+
+      expect(result).toBeNull();
+    });
+
+    it('should not infer a provider from a substring inside another word', async () => {
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+
+      const result = await learner.processError({
+        message: 'incoherent resource_exhausted response',
+      });
 
       expect(result).toBeNull();
     });
@@ -192,6 +223,254 @@ describe('PatternLearner', () => {
       expect(result).not.toBeNull();
       expect(result?.patterns).toContain('429');
     });
+
+    it('should learn an unknown provider from the event provider hint', async () => {
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+
+      const result = await learner.processError(
+        { message: 'burst_window_throttled' },
+        'Provider-X',
+      );
+
+      expect(result?.provider).toBe('provider-x');
+      expect(result?.patterns).toContain('burst_window_throttled');
+    });
+
+    it('should not learn a server error status without a rate-limit signal', async () => {
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+
+      const result = await learner.processError({ data: { statusCode: 503 } }, 'provider-x');
+
+      expect(result).toBeNull();
+      expect(learner.getStats().patternsLearned).toBe(0);
+    });
+
+    it.each([
+      'Invalid request limit configuration',
+      'Daily limit settings are malformed',
+      'Quota limit configuration is invalid',
+      'quota_information unavailable',
+      'quota_usage_metadata invalid',
+      'not_quota_related',
+    ])('should not learn application configuration text: %s', async message => {
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+
+      expect(await learner.processError({ message }, 'provider-x')).toBeNull();
+      expect(await learner.processError({ message }, 'provider-x')).toBeNull();
+      expect(await learner.processError({ message }, 'provider-x')).toBeNull();
+      expect(learner.getStats().patternsLearned).toBe(0);
+    });
+
+    it('should reset candidate frequency after the learning window expires', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-12T00:00:00.000Z'));
+      learner.updateConfig({
+        ...config,
+        minErrorFrequency: 3,
+        autoApproveThreshold: 0,
+        learningWindowMs: 1000,
+      });
+      const error = { message: 'burst_window_throttled' };
+
+      await learner.processError(error, 'provider-x');
+      await learner.processError(error, 'provider-x');
+      vi.advanceTimersByTime(1001);
+
+      expect(await learner.processError(error, 'provider-x')).toBeNull();
+      expect(await learner.processError(error, 'provider-x')).toBeNull();
+      expect(await learner.processError(error, 'provider-x')).not.toBeNull();
+    });
+
+    it('should bound high-cardinality candidate tracking with LRU eviction', async () => {
+      learner.updateConfig({
+        ...config,
+        maxLearnedPatterns: 2,
+        minErrorFrequency: 3,
+      });
+
+      for (let index = 0; index < 500; index++) {
+        await learner.processError(
+          { message: `req_${index}_rate_limit` },
+          'provider-x',
+        );
+      }
+
+      expect((learner as any).patternTracking.size).toBeLessThanOrEqual(100);
+    });
+
+    it('should keep the hard tracking cap while unique candidates await persistence', async () => {
+      learner.updateConfig({
+        ...config,
+        maxLearnedPatterns: 2,
+        minErrorFrequency: 1,
+        autoApproveThreshold: 0,
+      });
+
+      let releasePersistence!: () => void;
+      const persistenceGate = new Promise<void>(resolve => {
+        releasePersistence = resolve;
+      });
+      const appendSpy = vi.spyOn((learner as any).storage, 'appendLearnedPatterns')
+        .mockImplementation(async (patterns: any[]) => {
+          await persistenceGate;
+          return patterns;
+        });
+
+      const processing = Array.from({ length: 500 }, (_, index) => learner.processError(
+        { message: `req_${index}_rate_limit` },
+        'provider-x',
+      ));
+
+      await vi.waitFor(() => expect(appendSpy).toHaveBeenCalledTimes(1));
+      expect((learner as any).patternTracking.size).toBe(100);
+      expect((learner as any).pendingPatternKeys.size).toBe(100);
+
+      releasePersistence();
+      await Promise.all(processing);
+
+      expect(appendSpy).toHaveBeenCalledTimes(100);
+      expect(learner.getStats()).toEqual(expect.objectContaining({
+        patternsLearned: 100,
+        patternsRejected: 400,
+      }));
+      expect((learner as any).patternTracking.size).toBe(0);
+      expect((learner as any).pendingPatternKeys.size).toBe(0);
+    });
+
+    it('should record and surface configured persistence failures', async () => {
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+      learner.setConfigFilePath(join(tmpdir(), `missing-pattern-dir-${Date.now()}`, 'config.json'));
+
+      await expect(learner.processError(
+        { message: 'burst_window_throttled' },
+        'provider-x',
+      )).rejects.toThrow('Failed to write learned patterns');
+
+      expect(learner.getStats()).toEqual(expect.objectContaining({
+        patternsLearned: 0,
+        persistenceFailures: 1,
+      }));
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Failed to persist learned pattern',
+        expect.any(Object),
+      );
+    });
+
+    it('should serialize concurrent saves without losing learned patterns', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'pattern-learner-concurrency-'));
+      tempDirs.push(directory);
+      const configPath = join(directory, 'rate-limit-fallback.json');
+      writeFileSync(configPath, JSON.stringify({ errorPatterns: { enableLearning: true } }));
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+      learner.setConfigFilePath(configPath);
+
+      await Promise.all([
+        learner.processError({ message: 'burst_window_throttled' }, 'provider-a'),
+        learner.processError({ message: 'quota_window_exhausted' }, 'provider-b'),
+      ]);
+
+      const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+      expect(saved.errorPatterns.learnedPatterns).toHaveLength(2);
+      expect(saved.errorPatterns.learnedPatterns.map((pattern: any) => pattern.provider).sort())
+        .toEqual(['provider-a', 'provider-b']);
+      expect(readdirSync(directory).some(name => name.endsWith('.pattern-learning.lock'))).toBe(false);
+    });
+
+    it('should serialize saves across independent learner instances', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'pattern-learner-cross-instance-'));
+      tempDirs.push(directory);
+      const configPath = join(directory, 'rate-limit-fallback.json');
+      writeFileSync(configPath, JSON.stringify({ errorPatterns: { enableLearning: true } }));
+      const learningConfig = { ...config, minErrorFrequency: 1, autoApproveThreshold: 0 };
+      const learnerA = new PatternLearner(learningConfig, mockLogger);
+      const learnerB = new PatternLearner(learningConfig, mockLogger);
+      learnerA.setConfigFilePath(configPath);
+      learnerB.setConfigFilePath(configPath);
+
+      await Promise.all([
+        learnerA.processError({ message: 'burst_window_throttled' }, 'provider-a'),
+        learnerB.processError({ message: 'quota_window_exhausted' }, 'provider-b'),
+      ]);
+
+      const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+      expect(saved.errorPatterns.learnedPatterns).toHaveLength(2);
+      expect(saved.errorPatterns.learnedPatterns.map((pattern: any) => pattern.provider).sort())
+        .toEqual(['provider-a', 'provider-b']);
+    });
+
+    it('should preserve a symlinked config path and update its real target', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'pattern-learner-symlink-'));
+      tempDirs.push(directory);
+      const targetPath = join(directory, 'actual-config.json');
+      const symlinkPath = join(directory, 'rate-limit-fallback.json');
+      writeFileSync(targetPath, JSON.stringify({ errorPatterns: { enableLearning: true } }));
+      symlinkSync(targetPath, symlinkPath);
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+      learner.setConfigFilePath(symlinkPath);
+
+      await learner.processError({ message: 'burst_window_throttled' }, 'provider-x');
+
+      expect(lstatSync(symlinkPath).isSymbolicLink()).toBe(true);
+      const saved = JSON.parse(readFileSync(targetPath, 'utf-8'));
+      expect(saved.errorPatterns.learnedPatterns).toHaveLength(1);
+      expect(saved.errorPatterns.learnedPatterns[0].provider).toBe('provider-x');
+    });
+
+    it('should ignore other-provider patterns when scoring confidence', async () => {
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0.8 });
+      const existingOtherProvider = {
+        name: 'learned-provider-b-throttle',
+        provider: 'provider-b',
+        patterns: ['burst_window_throttled', 'throttled'],
+        priority: 70,
+      };
+
+      const learned = await learner.processError(
+        { message: 'burst_window_throttled' },
+        'provider-a',
+        [existingOtherProvider],
+      );
+
+      expect(learned).not.toBeNull();
+      expect(learned?.provider).toBe('provider-a');
+      expect(learned?.confidence).toBe(1);
+    });
+
+    it('should report learning activity to the metrics sink', async () => {
+      const metricsSink = {
+        recordPatternErrorProcessed: vi.fn(),
+        recordPatternLearned: vi.fn(),
+        recordPatternRejected: vi.fn(),
+        recordPatternPersistenceFailure: vi.fn(),
+        recordLearnedPatternMatch: vi.fn(),
+      };
+      learner = new PatternLearner(
+        { ...config, minErrorFrequency: 1, autoApproveThreshold: 0 },
+        mockLogger,
+        undefined,
+        metricsSink,
+      );
+
+      await learner.processError({ message: 'burst_window_throttled' }, 'provider-x');
+
+      expect(metricsSink.recordPatternErrorProcessed).toHaveBeenCalledOnce();
+      expect(metricsSink.recordPatternLearned).toHaveBeenCalledWith(1);
+      expect(metricsSink.recordPatternRejected).not.toHaveBeenCalled();
+      expect(metricsSink.recordPatternPersistenceFailure).not.toHaveBeenCalled();
+    });
+
+    it('should not persist non-429 server statuses as standalone match patterns', async () => {
+      learner.updateConfig({ ...config, minErrorFrequency: 1, autoApproveThreshold: 0 });
+
+      const learned = await learner.processError({
+        message: 'burst_window_throttled',
+        data: { statusCode: 503 },
+      }, 'provider-x');
+
+      expect(learned).not.toBeNull();
+      expect(learned?.patterns).toContain('burst_window_throttled');
+      expect(learned?.patterns).not.toContain('503');
+    });
   });
 
   describe('loadLearnedPatterns()', () => {
@@ -212,8 +491,6 @@ describe('PatternLearner', () => {
 
   describe('saveLearnedPatterns()', () => {
     it('should save patterns', async () => {
-      learner.setConfigFilePath('/path/to/config.json');
-
       const patterns = [
         {
           name: 'p1',
@@ -225,12 +502,10 @@ describe('PatternLearner', () => {
         },
       ];
 
-      await expect(learner.saveLearnedPatterns(patterns)).resolves.not.toThrow();
+      await expect(learner.saveLearnedPatterns(patterns)).resolves.toHaveLength(1);
     });
 
     it('should merge and clean patterns before saving', async () => {
-      learner.setConfigFilePath('/path/to/config.json');
-
       const patterns = [
         {
           name: 'p1',
