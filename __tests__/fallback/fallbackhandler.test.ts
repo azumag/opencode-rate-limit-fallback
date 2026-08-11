@@ -288,6 +288,83 @@ describe('FallbackHandler', () => {
     });
   });
 
+  describe('Agent persistence', () => {
+    it.each(['build', 'plan', 'custom-reviewer'])('forwards the %s agent from the last user message', async (agent) => {
+      mockClient.session.messages = vi.fn().mockResolvedValue({
+        data: [
+          {
+            info: { id: 'user-1', role: 'user', agent },
+            parts: [{ type: 'text', text: 'Continue the task' }],
+          },
+        ],
+      });
+      const retrySpy = vi.spyOn(fallbackHandler, 'retryWithModel').mockResolvedValue(undefined);
+
+      await fallbackHandler.handleRateLimitFallback(
+        'session-1',
+        'anthropic',
+        'claude-3-5-sonnet-20250514',
+      );
+
+      expect(retrySpy).toHaveBeenCalledWith(
+        'session-1',
+        { providerID: 'google', modelID: 'gemini-2.5-pro' },
+        [{ type: 'text', text: 'Continue the task' }],
+        null,
+        agent,
+      );
+    });
+
+    it('includes the original agent in promptAsync', async () => {
+      vi.useFakeTimers();
+
+      try {
+        const retry = fallbackHandler.retryWithModel(
+          'session-1',
+          { providerID: 'google', modelID: 'gemini-2.5-pro' },
+          [{ type: 'text', text: 'Continue the task' }],
+          null,
+          'build',
+        );
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(500);
+        await retry;
+
+        expect(mockClient.session.promptAsync).toHaveBeenCalledWith({
+          path: { id: 'session-1' },
+          body: {
+            parts: [{ type: 'text', text: 'Continue the task' }],
+            model: { providerID: 'google', modelID: 'gemini-2.5-pro' },
+            agent: 'build',
+          },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('omits agent when older message data does not provide one', async () => {
+      vi.useFakeTimers();
+
+      try {
+        const retry = fallbackHandler.retryWithModel(
+          'session-1',
+          { providerID: 'google', modelID: 'gemini-2.5-pro' },
+          [{ type: 'text', text: 'Continue the task' }],
+          null,
+        );
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(500);
+        await retry;
+
+        const request = vi.mocked(mockClient.session.promptAsync).mock.calls[0][0];
+        expect(request.body).not.toHaveProperty('agent');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('Concurrent Fallback Handling', () => {
     it('should handle concurrent fallback requests', async () => {
       mockSubagentTracker.getRootSession = vi.fn().mockReturnValue('root-session');

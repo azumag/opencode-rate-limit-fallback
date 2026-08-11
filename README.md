@@ -9,6 +9,7 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 - Detects rate limit errors (429, `rate_limit_error`, "usage limit", "quota exceeded", "high concurrency", etc.)
 - Ignores known benign Anthropic billing notices so they do not trigger false-positive fallbacks
 - Automatically aborts the current request and retries with a fallback model
+- Preserves the active OpenCode agent (`build`, `plan`, or a custom agent) when retrying
 - Configurable fallback model list with priority order
 - Three fallback modes: `cycle`, `stop`, and `retry-last`
 - **Headless mode support** (`opencode run`): disable fallback or abort on rate limit

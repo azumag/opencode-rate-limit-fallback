@@ -133,7 +133,8 @@ export class FallbackHandler {
     targetSessionID: string,
     model: FallbackModel,
     parts: MessagePart[],
-    hierarchy: SessionHierarchy | null
+    hierarchy: SessionHierarchy | null,
+    agent?: string,
   ): Promise<void> {
     // Record model usage for dynamic prioritization
     if (this.dynamicPrioritizer) {
@@ -194,6 +195,7 @@ export class FallbackHandler {
       body: {
         parts: sdkParts,
         model: { providerID: model.providerID, modelID: model.modelID },
+        ...(agent ? { agent } : {}),
       },
     });
 
@@ -381,7 +383,13 @@ export class FallbackHandler {
       const retryStartTime = Date.now();
 
       // Retry with the selected model
-      await this.retryWithModel(dedupSessionID, nextModel, parts, hierarchy);
+      await this.retryWithModel(
+        dedupSessionID,
+        nextModel,
+        parts,
+        hierarchy,
+        lastUserMessage.info.agent,
+      );
 
       // Record health success for fallback model
       if (this.healthTracker) {
