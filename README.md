@@ -157,6 +157,8 @@ Use `errorPatterns.ignorePatterns` to add your own false-positive suppressions:
 }
 ```
 
+The configured array replaces the built-in list. Include the built-in entries when extending it, as shown above. Set it to `[]` to disable ignore matching entirely. Entries must be non-empty strings (or `RegExp` values when configuring the plugin programmatically), and changes are applied by config hot reload.
+
 ### Dynamic Prioritization
 
 The dynamic prioritization feature automatically reorders your fallback models based on their performance metrics, helping you use the most reliable and fastest models first.

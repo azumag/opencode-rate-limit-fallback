@@ -500,8 +500,8 @@ export class ConfigValidator {
     }
 
     // Validate errorPatterns
-    if (config.errorPatterns) {
-      if (typeof config.errorPatterns !== 'object') {
+    if (config.errorPatterns !== undefined) {
+      if (!config.errorPatterns || typeof config.errorPatterns !== 'object' || Array.isArray(config.errorPatterns)) {
         errors.push({
           path: 'errorPatterns',
           message: 'errorPatterns must be an object',
@@ -518,13 +518,27 @@ export class ConfigValidator {
           });
         }
 
-        if (config.errorPatterns.ignorePatterns && !Array.isArray(config.errorPatterns.ignorePatterns)) {
-          errors.push({
-            path: 'errorPatterns.ignorePatterns',
-            message: 'ignorePatterns must be an array',
-            severity: 'error',
-            value: config.errorPatterns.ignorePatterns,
-          });
+        if (config.errorPatterns.ignorePatterns !== undefined) {
+          if (!Array.isArray(config.errorPatterns.ignorePatterns)) {
+            errors.push({
+              path: 'errorPatterns.ignorePatterns',
+              message: 'ignorePatterns must be an array',
+              severity: 'error',
+              value: config.errorPatterns.ignorePatterns,
+            });
+          } else {
+            config.errorPatterns.ignorePatterns.forEach((pattern, index) => {
+              const isValidString = typeof pattern === 'string' && pattern.trim().length > 0;
+              if (!isValidString && !(pattern instanceof RegExp)) {
+                errors.push({
+                  path: `errorPatterns.ignorePatterns[${index}]`,
+                  message: 'ignore pattern must be a non-empty string or RegExp',
+                  severity: 'error',
+                  value: pattern,
+                });
+              }
+            });
+          }
         }
       }
     }

@@ -7,6 +7,8 @@ import type { Logger } from '../../logger.js';
 import { DEFAULT_ERROR_PATTERNS_CONFIG } from '../config/defaults.js';
 import { PatternLearner } from './PatternLearner.js';
 
+export type ErrorClassification = 'rate-limit' | 'ignored' | 'other';
+
 /**
  * Error Pattern Registry class
  * Manages and matches error patterns for rate limit detection
@@ -23,7 +25,7 @@ export class ErrorPatternRegistry {
 
   constructor(
     logger?: Logger,
-    ignorePatterns: readonly (string | RegExp)[] = [...(DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns ?? [])],
+    ignorePatterns: readonly (string | RegExp)[] | null = [...(DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns ?? [])],
   ) {
     // Initialize logger
     this._logger = logger || {
@@ -133,8 +135,11 @@ export class ErrorPatternRegistry {
     }
   }
 
-  registerIgnorePatterns(patterns: readonly (string | RegExp)[]): void {
-    this.ignorePatterns = [...patterns];
+  registerIgnorePatterns(patterns: readonly (string | RegExp)[] | null | undefined): void {
+    this.ignorePatterns = Array.isArray(patterns)
+      ? patterns.filter((pattern): pattern is string | RegExp =>
+        (typeof pattern === 'string' && pattern.trim().length > 0) || pattern instanceof RegExp)
+      : [];
   }
 
   getIgnorePatterns(): (string | RegExp)[] {
@@ -145,9 +150,24 @@ export class ErrorPatternRegistry {
    * Initialize pattern learning
    */
   initializePatternLearning(config: PatternLearningConfig, configFilePath: string): void {
-    this.learningConfig = config;
-    this.patternLearner = new PatternLearner(config, this._logger);
-    this.patternLearner.setConfigFilePath(configFilePath);
+    this.configurePatternLearning(config, configFilePath);
+  }
+
+  /**
+   * Apply pattern learning settings, creating a learner only when enabled.
+   */
+  configurePatternLearning(config: PatternLearningConfig, configFilePath?: string): void {
+    this.learningConfig = { ...config };
+
+    if (!this.patternLearner && config.enabled) {
+      this.patternLearner = new PatternLearner(config, this._logger);
+    } else if (this.patternLearner) {
+      this.patternLearner.updateConfig(config);
+    }
+
+    if (this.patternLearner && configFilePath) {
+      this.patternLearner.setConfigFilePath(configFilePath);
+    }
   }
 
   /**
@@ -202,7 +222,14 @@ export class ErrorPatternRegistry {
    * Check if an error matches any registered rate limit pattern
    */
   isRateLimitError(error: unknown): boolean {
-    return this.getMatchedPattern(error) !== null;
+    return this.classifyError(error) === 'rate-limit';
+  }
+
+  /**
+   * Classify an error so ignored notices are not counted as model failures.
+   */
+  classifyError(error: unknown): ErrorClassification {
+    return this.analyzeError(error).classification;
   }
 
   /**
@@ -210,8 +237,12 @@ export class ErrorPatternRegistry {
    * Checks default patterns first, then learned patterns
    */
   getMatchedPattern(error: unknown): ErrorPattern | null {
+    return this.analyzeError(error).pattern;
+  }
+
+  private analyzeError(error: unknown): { classification: ErrorClassification; pattern: ErrorPattern | null } {
     if (!error || typeof error !== 'object') {
-      return null;
+      return { classification: 'other', pattern: null };
     }
 
     const err = error as {
@@ -235,14 +266,14 @@ export class ErrorPatternRegistry {
 
     const hasStrongRateLimitSignal = this.hasStrongRateLimitSignal(allText);
     if (!hasStrongRateLimitSignal && this.matchesIgnorePattern(allText)) {
-      return null;
+      return { classification: 'ignored', pattern: null };
     }
 
     // Check each pattern in default patterns first
     for (const pattern of this.patterns) {
       for (const patternStr of pattern.patterns) {
         if (this.matchesPattern(patternStr, allText)) {
-          return pattern;
+          return { classification: 'rate-limit', pattern };
         }
       }
     }
@@ -251,12 +282,12 @@ export class ErrorPatternRegistry {
     for (const pattern of this.learnedPatterns) {
       for (const patternStr of pattern.patterns) {
         if (this.matchesPattern(patternStr, allText)) {
-          return pattern;
+          return { classification: 'rate-limit', pattern };
         }
       }
     }
 
-    return null;
+    return { classification: 'other', pattern: null };
   }
 
   /**

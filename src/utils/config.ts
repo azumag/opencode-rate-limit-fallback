@@ -84,6 +84,10 @@ export interface ConfigLoadResult {
   rawUserConfig?: Partial<PluginConfig>; // Raw user config before merging with defaults (for verbose diff output)
 }
 
+function isValidIgnorePattern(value: unknown): value is string | RegExp {
+  return (typeof value === 'string' && value.trim().length > 0) || value instanceof RegExp;
+}
+
 /**
  * Validate configuration values
  */
@@ -92,6 +96,14 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const headlessOnRateLimit = config.headlessOnRateLimit;
   const resetInterval = config.metrics?.resetInterval;
   const strategy = config.retryPolicy?.strategy;
+  const errorPatterns = config.errorPatterns &&
+    typeof config.errorPatterns === 'object' &&
+    !Array.isArray(config.errorPatterns)
+    ? config.errorPatterns
+    : undefined;
+  const ignorePatterns = Array.isArray(errorPatterns?.ignorePatterns)
+    ? errorPatterns.ignorePatterns.filter(isValidIgnorePattern)
+    : [...(DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns ?? [])];
 
   return {
     ...DEFAULT_CONFIG,
@@ -130,14 +142,15 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
       ...DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
       ...config.dynamicPrioritization,
     } : DEFAULT_DYNAMIC_PRIORITIZATION_CONFIG,
-    errorPatterns: config.errorPatterns ? {
+    errorPatterns: errorPatterns ? {
       ...DEFAULT_ERROR_PATTERNS_CONFIG,
-      ...config.errorPatterns,
-      enableLearning: config.errorPatterns.enableLearning ?? DEFAULT_PATTERN_LEARNING_CONFIG.enabled,
-      autoApproveThreshold: config.errorPatterns.autoApproveThreshold ?? DEFAULT_PATTERN_LEARNING_CONFIG.autoApproveThreshold,
-      maxLearnedPatterns: config.errorPatterns.maxLearnedPatterns ?? DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns,
-      minErrorFrequency: config.errorPatterns.minErrorFrequency ?? DEFAULT_PATTERN_LEARNING_CONFIG.minErrorFrequency,
-      learningWindowMs: config.errorPatterns.learningWindowMs ?? DEFAULT_PATTERN_LEARNING_CONFIG.learningWindowMs,
+      ...errorPatterns,
+      ignorePatterns,
+      enableLearning: errorPatterns.enableLearning ?? DEFAULT_PATTERN_LEARNING_CONFIG.enabled,
+      autoApproveThreshold: errorPatterns.autoApproveThreshold ?? DEFAULT_PATTERN_LEARNING_CONFIG.autoApproveThreshold,
+      maxLearnedPatterns: errorPatterns.maxLearnedPatterns ?? DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns,
+      minErrorFrequency: errorPatterns.minErrorFrequency ?? DEFAULT_PATTERN_LEARNING_CONFIG.minErrorFrequency,
+      learningWindowMs: errorPatterns.learningWindowMs ?? DEFAULT_PATTERN_LEARNING_CONFIG.learningWindowMs,
     } : DEFAULT_ERROR_PATTERNS_CONFIG,
   };
 }
@@ -150,34 +163,35 @@ export function loadConfig(directory: string, worktree?: string, logger?: Logger
   const xdgConfigHome = process.env.XDG_CONFIG_HOME || join(homedir, ".config");
 
   // Build search paths: worktree first, then directory, then home locations
-  const searchDirs: string[] = [];
+  const searchLocations: Array<{ dir: string; subdir: '.opencode' | 'opencode' }> = [];
   if (worktree) {
-    searchDirs.push(resolve(worktree));
+    searchLocations.push({ dir: resolve(worktree), subdir: '.opencode' });
   }
-  if (!worktree || worktree !== directory) {
-    searchDirs.push(resolve(directory));
+  if (!worktree || resolve(worktree) !== resolve(directory)) {
+    searchLocations.push({ dir: resolve(directory), subdir: '.opencode' });
   }
-  searchDirs.push(resolve(homedir));
-  searchDirs.push(resolve(xdgConfigHome));
+  searchLocations.push({ dir: resolve(homedir), subdir: '.opencode' });
+  searchLocations.push({ dir: resolve(xdgConfigHome), subdir: 'opencode' });
+
+  const searchDirs = [...new Set(searchLocations.map(({ dir }) => dir))];
 
   const configPaths: string[] = [];
-  for (const dir of searchDirs) {
-    // XDG config home uses "opencode" (no dot), others use ".opencode"
-    const subdir = dir === xdgConfigHome ? "opencode" : ".opencode";
+  for (const { dir, subdir } of searchLocations) {
     configPaths.push(join(dir, subdir, "rate-limit-fallback.json"));
     configPaths.push(join(dir, "rate-limit-fallback.json"));
   }
+  const uniqueConfigPaths = [...new Set(configPaths)];
 
   // Log search paths for debugging
   if (logger) {
-    logger.debug(`Searching for config file in ${configPaths.length} locations`);
-    for (const configPath of configPaths) {
+    logger.debug(`Searching for config file in ${uniqueConfigPaths.length} locations`);
+    for (const configPath of uniqueConfigPaths) {
       const exists = existsSync(configPath);
       logger.debug(`  ${exists ? "✓" : "✗"} ${configPath}`);
     }
   }
 
-  for (const configPath of configPaths) {
+  for (const configPath of uniqueConfigPaths) {
     if (existsSync(configPath)) {
       // Validate path safety before reading
       if (!validatePathSafety(configPath, searchDirs)) {
@@ -209,14 +223,14 @@ export function loadConfig(directory: string, worktree?: string, logger?: Logger
 
   if (logger) {
     // Log that no config file was found
-    logger.info(`No config file found in any of the ${configPaths.length} search paths. Using default configuration.`);
+    logger.info(`No config file found in any of the ${uniqueConfigPaths.length} search paths. Using default configuration.`);
 
     // Show a warning if default fallback models is empty (which is now the case)
     if (DEFAULT_CONFIG.fallbackModels.length === 0) {
       logger.warn('No fallback models configured. The plugin will not be able to fallback when rate limited.');
       logger.warn('Please create a config file with your fallback models.');
       logger.warn('Config file locations (in order of priority):');
-      for (const configPath of configPaths) {
+      for (const configPath of uniqueConfigPaths) {
         logger.warn(`  - ${configPath}`);
       }
       logger.warn('Example config:');

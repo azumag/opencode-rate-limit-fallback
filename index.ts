@@ -378,13 +378,16 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       // Handle message.updated events
       if (isMessageUpdatedEvent(event)) {
         const info = event.properties.info;
+        const errorClassification = info?.error
+          ? errorPatternRegistry.classifyError(info.error)
+          : null;
 
         // Track model info for all assistant messages (needed to identify current model on session.error)
         if (info?.providerID && info?.modelID && info?.sessionID) {
           fallbackHandler.setSessionModel(info.sessionID, info.providerID, info.modelID);
         }
 
-        if (info?.error && errorPatternRegistry.isRateLimitError(info.error)) {
+        if (info?.error && errorClassification === 'rate-limit') {
           // Learn from this error if pattern learning is enabled
           const patternLearner = errorPatternRegistry.getPatternLearner();
           if (patternLearner) {
@@ -396,7 +399,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
         } else if (info?.status === "completed" && !info?.error && info?.id) {
           // Record fallback success
           fallbackHandler.handleMessageUpdated(info.sessionID, info.id, false, false);
-        } else if (info?.error && !errorPatternRegistry.isRateLimitError(info.error) && info?.id) {
+        } else if (info?.error && errorClassification === 'other' && info?.id) {
           // Record non-rate-limit error
           fallbackHandler.handleMessageUpdated(info.sessionID, info.id, true, false);
         }
