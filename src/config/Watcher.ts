@@ -2,7 +2,8 @@
  * Configuration file watcher for hot reload functionality
  */
 
-import { watch, type FSWatcher } from 'fs';
+import { realpathSync, watch, type FSWatcher } from 'fs';
+import { basename, dirname } from 'path';
 import type { Logger } from '../../logger.js';
 
 /**
@@ -25,6 +26,7 @@ export class ConfigWatcher {
   private onReload: () => Promise<void>;
   private options: ConfigWatchOptions;
   private isReloading: boolean;
+  private pendingReload: boolean;
 
   constructor(
     configPath: string,
@@ -37,6 +39,7 @@ export class ConfigWatcher {
     this.onReload = onReload;
     this.options = options;
     this.isReloading = false;
+    this.pendingReload = false;
   }
 
   /**
@@ -54,17 +57,22 @@ export class ConfigWatcher {
     }
 
     try {
-      this.watcher = watch(this.configPath, (eventType, filename) => {
+      let watchedPath = this.configPath;
+      try {
+        watchedPath = realpathSync(this.configPath);
+      } catch {
+        // Fall back to the configured path when it cannot be resolved yet.
+      }
+      const watchedFile = basename(watchedPath);
+      // Watch the parent directory so atomic replacement of the config file
+      // or a symlink target does not leave the watcher on the old inode.
+      this.watcher = watch(dirname(watchedPath), (eventType, filename) => {
+        if (filename && basename(filename.toString()) !== watchedFile) {
+          return;
+        }
         this.logger.debug(`Config file event: ${eventType} ${filename || ''}`);
 
-        // Debounce the reload
-        if (this.debounceTimer) {
-          clearTimeout(this.debounceTimer);
-        }
-
-        this.debounceTimer = setTimeout(() => {
-          this.handleConfigChange();
-        }, this.options.debounceMs);
+        this.scheduleReload();
       });
 
       this.logger.info(`Watching config file for changes: ${this.configPath}`);
@@ -79,6 +87,7 @@ export class ConfigWatcher {
    * Stop watching the config file
    */
   stop(): void {
+    this.pendingReload = false;
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = undefined;
@@ -102,7 +111,8 @@ export class ConfigWatcher {
    */
   private async handleConfigChange(): Promise<void> {
     if (this.isReloading) {
-      this.logger.warn('Config changed while reload in progress, changes will be picked up after current reload completes');
+      this.pendingReload = true;
+      this.logger.warn('Config changed while reload in progress, queued for after current reload completes');
       return;
     }
 
@@ -117,7 +127,21 @@ export class ConfigWatcher {
       this.logger.error('Config reload failed', { error: errorMessage });
     } finally {
       this.isReloading = false;
+      if (this.pendingReload) {
+        this.pendingReload = false;
+        this.scheduleReload();
+      }
     }
+  }
+
+  private scheduleReload(): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+    }
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = undefined;
+      void this.handleConfigChange();
+    }, this.options.debounceMs);
   }
 
   /**

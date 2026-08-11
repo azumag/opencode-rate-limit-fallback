@@ -62,6 +62,14 @@ export class MetricsManager {
         reorders: 0,
         modelsWithDynamicScores: 0,
       },
+      patternLearning: {
+        totalErrorsProcessed: 0,
+        patternsLearned: 0,
+        patternsRejected: 0,
+        persistenceFailures: 0,
+        averageConfidence: 0,
+        learnedPatternMatches: 0,
+      },
       startedAt: Date.now(),
       generatedAt: Date.now(),
     };
@@ -123,6 +131,14 @@ export class MetricsManager {
         reorders: 0,
         modelsWithDynamicScores: 0,
       },
+      patternLearning: {
+        totalErrorsProcessed: 0,
+        patternsLearned: 0,
+        patternsRejected: 0,
+        persistenceFailures: 0,
+        averageConfidence: 0,
+        learnedPatternMatches: 0,
+      },
       startedAt: Date.now(),
       generatedAt: Date.now(),
     };
@@ -154,6 +170,36 @@ export class MetricsManager {
         lastOccurrence: now,
       });
     }
+  }
+
+  recordPatternErrorProcessed(): void {
+    if (!this.config.enabled) return;
+    this.metrics.patternLearning.totalErrorsProcessed++;
+  }
+
+  recordPatternLearned(confidence: number): void {
+    if (!this.config.enabled) return;
+    const previousCount = this.metrics.patternLearning.patternsLearned;
+    const previousTotal = this.metrics.patternLearning.averageConfidence * previousCount;
+    this.metrics.patternLearning.patternsLearned++;
+    this.metrics.patternLearning.averageConfidence = Number((
+      (previousTotal + confidence) / this.metrics.patternLearning.patternsLearned
+    ).toFixed(4));
+  }
+
+  recordPatternRejected(): void {
+    if (!this.config.enabled) return;
+    this.metrics.patternLearning.patternsRejected++;
+  }
+
+  recordPatternPersistenceFailure(): void {
+    if (!this.config.enabled) return;
+    this.metrics.patternLearning.persistenceFailures++;
+  }
+
+  recordLearnedPatternMatch(): void {
+    if (!this.config.enabled) return;
+    this.metrics.patternLearning.learnedPatternMatches++;
   }
 
   /**
@@ -440,6 +486,7 @@ export class MetricsManager {
         ),
       },
       dynamicPrioritization: metrics.dynamicPrioritization,
+      patternLearning: metrics.patternLearning,
       startedAt: metrics.startedAt,
       generatedAt: metrics.generatedAt,
     };
@@ -574,6 +621,17 @@ export class MetricsManager {
     lines.push(`  Enabled: ${metrics.dynamicPrioritization.enabled ? 'Yes' : 'No'}`);
     lines.push(`  Reorders: ${metrics.dynamicPrioritization.reorders}`);
     lines.push(`  Models with dynamic scores: ${metrics.dynamicPrioritization.modelsWithDynamicScores}`);
+    lines.push("");
+
+    // Pattern Learning
+    lines.push("Pattern Learning:");
+    lines.push("-".repeat(40));
+    lines.push(`  Errors Processed: ${metrics.patternLearning.totalErrorsProcessed}`);
+    lines.push(`  Patterns Learned: ${metrics.patternLearning.patternsLearned}`);
+    lines.push(`  Patterns Rejected: ${metrics.patternLearning.patternsRejected}`);
+    lines.push(`  Persistence Failures: ${metrics.patternLearning.persistenceFailures}`);
+    lines.push(`  Average Confidence: ${metrics.patternLearning.averageConfidence.toFixed(2)}`);
+    lines.push(`  Learned Pattern Matches: ${metrics.patternLearning.learnedPatternMatches}`);
 
     return lines.join("\n");
   }
@@ -700,6 +758,19 @@ export class MetricsManager {
       metrics.dynamicPrioritization.enabled ? 'Yes' : 'No',
       metrics.dynamicPrioritization.reorders,
       metrics.dynamicPrioritization.modelsWithDynamicScores,
+    ].join(","));
+    lines.push("");
+
+    // Pattern Learning CSV
+    lines.push("=== PATTERN_LEARNING ===");
+    lines.push("errors_processed,patterns_learned,patterns_rejected,persistence_failures,average_confidence,learned_pattern_matches");
+    lines.push([
+      metrics.patternLearning.totalErrorsProcessed,
+      metrics.patternLearning.patternsLearned,
+      metrics.patternLearning.patternsRejected,
+      metrics.patternLearning.persistenceFailures,
+      metrics.patternLearning.averageConfidence,
+      metrics.patternLearning.learnedPatternMatches,
     ].join(","));
 
     return lines.join("\n");

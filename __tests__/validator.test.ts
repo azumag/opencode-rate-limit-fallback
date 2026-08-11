@@ -504,6 +504,33 @@ describe('ConfigValidator', () => {
         'errorPatterns.learnedPatterns[0].sampleCount',
       ]));
     });
+
+    it('should reject invalid pattern learning settings (strict mode)', () => {
+      const config = {
+        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
+        cooldownMs: 5000,
+        enabled: true,
+        fallbackMode: 'cycle' as const,
+        errorPatterns: {
+          enableLearning: 'yes',
+          autoApproveThreshold: 1.1,
+          maxLearnedPatterns: 0,
+          minErrorFrequency: 1.5,
+          learningWindowMs: 0,
+        },
+      };
+
+      const result = validator.validate(config as any, { strict: true });
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.map(e => e.path)).toEqual(expect.arrayContaining([
+        'errorPatterns.enableLearning',
+        'errorPatterns.autoApproveThreshold',
+        'errorPatterns.maxLearnedPatterns',
+        'errorPatterns.minErrorFrequency',
+        'errorPatterns.learningWindowMs',
+      ]));
+    });
   });
 
   describe('getDiagnostics() - Diagnostic Output', () => {

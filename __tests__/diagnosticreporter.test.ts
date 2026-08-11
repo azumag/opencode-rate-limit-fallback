@@ -120,6 +120,36 @@ describe('DiagnosticReporter', () => {
       expect(report.errorPatterns.stats.byPriority).toBeDefined();
     });
 
+    it('should include live pattern learning state and outcomes', async () => {
+      const errorPatternRegistry = new ErrorPatternRegistry(logger);
+      errorPatternRegistry.configurePatternLearning({
+        enabled: true,
+        autoApproveThreshold: 0,
+        maxLearnedPatterns: 20,
+        minErrorFrequency: 1,
+        learningWindowMs: 86400000,
+      });
+      await errorPatternRegistry.learnFromError(
+        { message: 'burst_window_throttled' },
+        'provider-x',
+      );
+      reporter = new DiagnosticReporter(
+        testConfig,
+        'test-config.json',
+        undefined,
+        undefined,
+        errorPatternRegistry,
+      );
+
+      const report = reporter.generateReport();
+      expect(report.errorPatterns.learning.enabled).toBe(true);
+      expect(report.errorPatterns.learning.stats).toEqual(expect.objectContaining({
+        totalErrorsProcessed: 1,
+        patternsLearned: 1,
+      }));
+      expect(reporter.formatReport(report, 'text')).toContain('Learning Accepted: 1');
+    });
+
     it('should include circuit breaker information when provided', () => {
       const circuitBreaker = new CircuitBreaker(
         { enabled: true, failureThreshold: 5, recoveryTimeoutMs: 60000, halfOpenMaxCalls: 1, successThreshold: 2 },

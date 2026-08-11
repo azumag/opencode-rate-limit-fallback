@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RateLimitFallback } from '../../index';
 import { FallbackHandler } from '../src/fallback/FallbackHandler.js';
+import { PatternLearner } from '../src/errors/PatternLearner.js';
 
 // Mock the OpenCode plugin module
 vi.mock('@opencode-ai/plugin', () => ({
@@ -1909,6 +1910,64 @@ describe('Learned pattern startup hydration', () => {
     plugin.cleanup?.();
   });
 
+  it('caps configured learned patterns during startup', async () => {
+    const lowerRankedPattern = {
+      ...learnedPattern,
+      name: 'learned-lower-ranked',
+      patterns: ['vendor-lower-ranked-capacity'],
+      confidence: 0.8,
+      sampleCount: 20,
+    };
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      fallbackModels: [{ providerID: 'google', modelID: 'gemini-fallback' }],
+      enabled: true,
+      errorPatterns: {
+        maxLearnedPatterns: 1,
+        learnedPatterns: [lowerRankedPattern, learnedPattern],
+      },
+    }));
+    const client = createMockClient();
+    vi.mocked(client.session.messages).mockResolvedValue({
+      data: [{
+        info: { id: 'message-1', role: 'user' },
+        parts: [{ type: 'text', text: 'continue the task' }],
+      }],
+    });
+    const plugin = await RateLimitFallback({
+      client: client as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    await plugin.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'lower-ranked-session',
+          error: { message: 'vendor-lower-ranked-capacity' },
+        },
+      },
+    });
+    expect(client.session.abort).not.toHaveBeenCalled();
+
+    await plugin.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'higher-ranked-session',
+          error: { message: 'vendor-e42-capacity-signal' },
+        },
+      },
+    });
+    expect(client.session.abort).toHaveBeenCalledWith({
+      path: { id: 'higher-ranked-session' },
+    });
+    plugin.cleanup?.();
+  });
+
   it('matches configured learned patterns immediately in headless abort mode', async () => {
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
       enabled: true,
@@ -1939,6 +1998,158 @@ describe('Learned pattern startup hydration', () => {
     expect(client.session.abort).toHaveBeenCalledWith({
       path: { id: 'headless-learned-session' },
     });
+  });
+
+  it('preserves built-in headless detection without a provider hint', async () => {
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true,
+      headlessOnRateLimit: 'abort',
+    }));
+    const client = createMockClient() as any;
+    delete client.tui;
+    const plugin = await RateLimitFallback({
+      client,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    await plugin.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'headless-overloaded-session',
+          error: { message: 'Service is overloaded' },
+        },
+      },
+    });
+
+    expect(client.session.abort).toHaveBeenCalledWith({
+      path: { id: 'headless-overloaded-session' },
+    });
+  });
+
+  it('requires a provider hint for provider-scoped learned patterns in headless mode', async () => {
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true,
+      headlessOnRateLimit: 'abort',
+      errorPatterns: {
+        learnedPatterns: [{ ...learnedPattern, provider: 'provider-x' }],
+      },
+    }));
+    const client = createMockClient() as any;
+    delete client.tui;
+    const plugin = await RateLimitFallback({
+      client,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    await plugin.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'headless-unknown-provider',
+          error: { message: 'vendor-e42-capacity-signal' },
+        },
+      },
+    });
+    expect(client.session.abort).not.toHaveBeenCalled();
+
+    await plugin.event?.({
+      event: {
+        type: 'message.updated',
+        properties: {
+          info: {
+            id: 'headless-provider-message',
+            sessionID: 'headless-known-provider',
+            providerID: 'provider-x',
+            error: { message: 'vendor-e42-capacity-signal' },
+          },
+        },
+      },
+    });
+    expect(client.session.abort).toHaveBeenCalledWith({
+      path: { id: 'headless-known-provider' },
+    });
+  });
+});
+
+describe('Automatic pattern learning event integration', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(true);
+  });
+
+  it('observes an unmatched message error with its event provider', async () => {
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      fallbackModels: [{ providerID: 'google', modelID: 'gemini-fallback' }],
+      enabled: true,
+      errorPatterns: {
+        enableLearning: true,
+        minErrorFrequency: 3,
+      },
+    }));
+    const processError = vi.spyOn(PatternLearner.prototype, 'processError')
+      .mockResolvedValue(null);
+    const client = createMockClient();
+    const plugin = await RateLimitFallback({
+      client: client as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    await plugin.event?.({
+      event: {
+        type: 'message.updated',
+        properties: {
+          info: {
+            id: 'message-learning-1',
+            sessionID: 'learning-session',
+            role: 'assistant',
+            providerID: 'provider-x',
+            modelID: 'model-x',
+            error: { message: 'burst_window_throttled' },
+          },
+        },
+      },
+    });
+
+    expect(processError).toHaveBeenCalledWith(
+      { message: 'burst_window_throttled' },
+      'provider-x',
+      expect.any(Array),
+    );
+    expect(client.session.abort).not.toHaveBeenCalled();
+    expect(client.session.promptAsync).not.toHaveBeenCalled();
+
+    processError.mockClear();
+    await plugin.event?.({
+      event: {
+        type: 'session.status',
+        properties: {
+          sessionID: 'learning-session',
+          status: { type: 'retry', message: 'quota_window_exhausted' },
+        },
+      },
+    });
+    expect(processError).toHaveBeenCalledWith(
+      { message: 'quota_window_exhausted' },
+      'provider-x',
+      expect.any(Array),
+    );
+    expect(client.session.abort).not.toHaveBeenCalled();
+
+    plugin.cleanup?.();
+    processError.mockRestore();
   });
 });
 

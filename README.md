@@ -160,6 +160,36 @@ Use `errorPatterns.ignorePatterns` to add your own false-positive suppressions:
 
 The configured array replaces the built-in list. Include the built-in entries when extending it, as shown above. Set it to `[]` to disable ignore matching entirely. Entries must be non-empty strings (or `RegExp` values when configuring the plugin programmatically), and changes are applied by config hot reload.
 
+### Automatic Pattern Learning
+
+Pattern learning can recognize a new provider error format after it appears repeatedly. It observes HTTP `429` responses and errors containing explicit rate-limit signals such as quota, throttling, or structured rate-limit codes. Arbitrary server and application errors are not learned.
+
+```json
+{
+  "errorPatterns": {
+    "enableLearning": true,
+    "autoApproveThreshold": 0.8,
+    "maxLearnedPatterns": 20,
+    "minErrorFrequency": 3,
+    "learningWindowMs": 86400000
+  }
+}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `errorPatterns.enableLearning` | boolean | `false` | Enable automatic pattern learning |
+| `errorPatterns.autoApproveThreshold` | number | `0.8` | Minimum confidence from `0` to `1` required to save a candidate |
+| `errorPatterns.maxLearnedPatterns` | integer | `20` | Maximum saved patterns; highest-confidence patterns are retained |
+| `errorPatterns.minErrorFrequency` | integer | `3` | Required observations inside the learning window |
+| `errorPatterns.learningWindowMs` | number | `86400000` | Observation window in milliseconds |
+
+The provider from OpenCode's message event is used even when the error text does not name it. After a candidate reaches the frequency and confidence thresholds, the plugin atomically updates the config file and immediately refreshes the live registry; hot reload is not required. Only extracted phrases, status codes, and structured error codes are stored, not the complete raw error body.
+
+Learned entries with confidence at or below `0.7` remain visible for review but are not used for rate-limit detection. Lowering `autoApproveThreshold` below that value can persist candidates for inspection; it does not lower the runtime detection safety floor.
+
+Learned entries are validated during startup and hot reload. Strict configuration validation rejects malformed entries; non-strict mode excludes only the invalid entries.
+
 ### Dynamic Prioritization
 
 The dynamic prioritization feature automatically reorders your fallback models based on their performance metrics, helping you use the most reliable and fastest models first.
@@ -633,6 +663,7 @@ Plugin diagnostics are sent through [OpenCode's structured application log API](
   - Model performance (requests, successes, failures, response time)
   - **Circuit breaker statistics** (state transitions, open/closed counts)
   - **Dynamic prioritization statistics** (enabled status, reorder count, models with scores)
+  - **Pattern learning statistics** (processed, learned, rejected, persistence failures, average confidence, learned-pattern matches)
 
 ### Metrics Configuration
 

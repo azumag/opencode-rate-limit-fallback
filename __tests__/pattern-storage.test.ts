@@ -10,6 +10,17 @@ describe('PatternStorage', () => {
   let config: PatternLearningConfig;
 
   beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fs.realpath).mockImplementation(async path => String(path));
+    vi.mocked(fs.open).mockResolvedValue({
+      close: vi.fn().mockResolvedValue(undefined),
+      writeFile: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    vi.mocked(fs.readFile).mockImplementation(async path =>
+      String(path).endsWith('.pattern-learning.lock')
+        ? ''
+        : JSON.stringify({ enabled: true })
+    );
     config = {
       enabled: true,
       autoApproveThreshold: 0.8,
@@ -99,6 +110,21 @@ describe('PatternStorage', () => {
 
       // Should not merge
       expect(result.length).toBe(2);
+    });
+
+    it('should not merge similar patterns from different providers', () => {
+      const patterns: LearnedPattern[] = [
+        {
+          name: 'p1', provider: 'provider-a', patterns: ['burst throttled'], priority: 70,
+          confidence: 0.9, learnedAt: '2026-01-01', sampleCount: 5,
+        },
+        {
+          name: 'p2', provider: 'provider-b', patterns: ['burst throttled'], priority: 70,
+          confidence: 0.8, learnedAt: '2026-01-01', sampleCount: 3,
+        },
+      ];
+
+      expect(storage.mergeSimilarPatterns(patterns)).toHaveLength(2);
     });
 
     it('should use maximum confidence when merging', () => {
@@ -269,7 +295,7 @@ describe('PatternStorage', () => {
         },
       ];
 
-      await expect(storage.saveLearnedPatterns(patterns)).resolves.not.toThrow();
+      await expect(storage.saveLearnedPatterns(patterns)).resolves.toBe(false);
     });
 
     it('should handle file write errors gracefully', async () => {
@@ -288,7 +314,27 @@ describe('PatternStorage', () => {
         },
       ];
 
-      await expect(storage.saveLearnedPatterns(patterns)).resolves.not.toThrow();
+      await expect(storage.saveLearnedPatterns(patterns)).resolves.toBe(false);
+    });
+
+    it('should atomically replace the config file after writing a sibling temporary file', async () => {
+      const configPath = '/path/to/rate-limit-fallback.json';
+      storage.setConfigFilePath(configPath);
+      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ enabled: true }) as any);
+      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+      vi.mocked(fs.rename).mockResolvedValue(undefined);
+      const patterns: LearnedPattern[] = [{
+        name: 'p1', patterns: ['burst throttled'], priority: 70,
+        confidence: 0.9, learnedAt: '2026-01-01', sampleCount: 3,
+      }];
+
+      const saved = await storage.saveLearnedPatterns(patterns);
+
+      expect(saved).toBe(true);
+      const tempPath = vi.mocked(fs.writeFile).mock.calls[0][0] as string;
+      expect(tempPath).toContain('.rate-limit-fallback.json.');
+      expect(vi.mocked(fs.writeFile).mock.calls[0][2]).toEqual({ encoding: 'utf-8', mode: 0o600 });
+      expect(fs.rename).toHaveBeenCalledWith(tempPath, configPath);
     });
   });
 

@@ -223,6 +223,35 @@ export interface PatternLearningConfig {
 }
 
 /**
+ * Runtime statistics for automatic pattern learning.
+ */
+export interface PatternLearningStats {
+  totalErrorsProcessed: number;
+  patternsLearned: number;
+  patternsRejected: number;
+  persistenceFailures: number;
+}
+
+/**
+ * Aggregated pattern learning metrics, including confidence and live usage.
+ */
+export interface PatternLearningMetrics extends PatternLearningStats {
+  averageConfidence: number;
+  learnedPatternMatches: number;
+}
+
+/**
+ * Optional metrics sink used by the learner without coupling it to MetricsManager.
+ */
+export interface PatternLearningMetricsSink {
+  recordPatternErrorProcessed(): void;
+  recordPatternLearned(confidence: number): void;
+  recordPatternRejected(): void;
+  recordPatternPersistenceFailure(): void;
+  recordLearnedPatternMatch(): void;
+}
+
+/**
  * Learned pattern with confidence metadata
  */
 export interface LearnedPattern extends ErrorPattern {
@@ -494,6 +523,7 @@ export interface MetricsData {
     byModel: Map<string, CircuitBreakerMetrics>;
   };
   dynamicPrioritization: DynamicPrioritizationMetrics;
+  patternLearning: PatternLearningMetrics;
   startedAt: number;
   generatedAt: number;
 }

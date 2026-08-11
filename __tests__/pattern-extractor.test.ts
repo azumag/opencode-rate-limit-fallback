@@ -60,6 +60,15 @@ describe('PatternExtractor', () => {
       expect(pattern?.provider).toBe('openai');
     });
 
+    it('should prefer an event provider hint for unknown providers', () => {
+      const pattern = extractor.extractPattern(
+        { message: 'burst_window_throttled' },
+        'Provider-X',
+      );
+
+      expect(pattern?.provider).toBe('provider-x');
+    });
+
     it('should extract HTTP status codes', () => {
       const error = {
         message: 'Rate limit error',
@@ -92,6 +101,18 @@ describe('PatternExtractor', () => {
       const pattern = extractor.extractPattern(error);
 
       expect(pattern?.errorCodes).toContain('insufficient_quota');
+    });
+
+    it('should preserve the complete structured rate-limit code', () => {
+      const pattern = extractor.extractPattern({
+        message: 'ProviderX: rate_limit_exceeded_error',
+      }, 'providerx');
+
+      expect(pattern?.errorCodes).toContain('rate_limit_exceeded_error');
+    });
+
+    it('should not treat a generic exceeded message as a learning signal', () => {
+      expect(extractor.extractPattern({ message: 'Memory allocation exceeded' }, 'providerx')).toBeNull();
     });
 
     it('should extract from responseBody', () => {
@@ -215,6 +236,46 @@ describe('PatternExtractor', () => {
       expect(pattern?.errorCodes).toContain('resource_exhausted');
     });
 
+    it('should not treat a bare quota word as a learnable rate-limit signal', () => {
+      const pattern = extractor.extractPattern({
+        message: 'Quota information is temporarily unavailable',
+      }, 'provider-x');
+
+      expect(pattern).toBeNull();
+    });
+
+    it.each([
+      'quota_information unavailable',
+      'quota_usage_metadata invalid',
+      'not_quota_related',
+    ])('should not treat a non-depletion quota code as learnable: %s', message => {
+      expect(extractor.extractPattern({ message }, 'provider-x')).toBeNull();
+    });
+
+    it('should retain quota codes with explicit depletion semantics', () => {
+      const pattern = extractor.extractPattern({
+        message: 'quota_window_exhausted',
+      }, 'provider-x');
+
+      expect(pattern?.errorCodes).toContain('quota_window_exhausted');
+    });
+
+    it.each([
+      'Invalid request limit configuration',
+      'Daily limit settings are malformed',
+      'Quota limit configuration is invalid',
+    ])('should not learn non-exhaustion limit configuration text: %s', message => {
+      expect(extractor.extractPattern({ message }, 'provider-x')).toBeNull();
+    });
+
+    it('should extract an explicitly exhausted request limit', () => {
+      const pattern = extractor.extractPattern({
+        message: 'Request limit reached for this account',
+      }, 'provider-x');
+
+      expect(pattern?.phrases).toContain('request limit reached');
+    });
+
     it('should handle empty error object gracefully', () => {
       const error = {};
 
@@ -250,6 +311,14 @@ describe('PatternExtractor', () => {
         const pattern = extractor.extractPattern({ message });
         expect(pattern?.provider).toBe(expected);
       }
+    });
+
+    it('should not infer cohere from a larger unrelated word', () => {
+      const pattern = extractor.extractPattern({
+        message: 'incoherent resource_exhausted response',
+      });
+
+      expect(pattern?.provider).toBeNull();
     });
   });
 });

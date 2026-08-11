@@ -2,13 +2,28 @@
  * Error Pattern Registry for rate limit error detection
  */
 
-import type { ErrorPattern, LearnedPattern, PatternLearningConfig } from '../types/index.js';
+import type {
+  ErrorPattern,
+  LearnedPattern,
+  PatternLearningConfig,
+  PatternLearningMetricsSink,
+} from '../types/index.js';
 import type { Logger } from '../../logger.js';
-import { DEFAULT_ERROR_PATTERNS_CONFIG } from '../config/defaults.js';
+import {
+  DEFAULT_ERROR_PATTERNS_CONFIG,
+  DEFAULT_PATTERN_LEARNING_CONFIG,
+} from '../config/defaults.js';
 import { isValidErrorPattern, isValidLearnedPattern } from '../config/patternValidation.js';
 import { PatternLearner } from './PatternLearner.js';
 
 export type ErrorClassification = 'rate-limit' | 'ignored' | 'other';
+
+const MIN_LEARNED_PATTERN_CONFIDENCE = 0.7;
+
+function normalizeProvider(provider?: string): string | undefined {
+  const normalized = provider?.trim().toLowerCase();
+  return normalized || undefined;
+}
 
 /**
  * Error Pattern Registry class
@@ -22,6 +37,7 @@ export class ErrorPatternRegistry {
   private overriddenPatterns = new Map<string, ErrorPattern>();
   private patternLearner: PatternLearner | null = null;
   private learningConfig: PatternLearningConfig | null = null;
+  private patternLearningMetricsSink?: PatternLearningMetricsSink;
   // Logger is available for future use
   // @ts-ignore - Unused but kept for potential future use
   private _logger: Logger;
@@ -93,7 +109,6 @@ export class ErrorPatternRegistry {
         'rate limit exceeded',
         'user rate limit exceeded',
         'daily limit exceeded',
-        '429',
       ],
       priority: 80,
     });
@@ -200,9 +215,15 @@ export class ErrorPatternRegistry {
    */
   configurePatternLearning(config: PatternLearningConfig, configFilePath?: string): void {
     this.learningConfig = { ...config };
+    this.learnedPatterns = this.limitLearnedPatterns(this.learnedPatterns);
 
     if (!this.patternLearner && config.enabled) {
-      this.patternLearner = new PatternLearner(config, this._logger);
+      this.patternLearner = new PatternLearner(
+        config,
+        this._logger,
+        patterns => this.updateLearnedPatterns([...patterns]),
+        this.patternLearningMetricsSink,
+      );
     } else if (this.patternLearner) {
       this.patternLearner.updateConfig(config);
     }
@@ -226,6 +247,23 @@ export class ErrorPatternRegistry {
     return this.patternLearner;
   }
 
+  setPatternLearningMetricsSink(metricsSink?: PatternLearningMetricsSink): void {
+    this.patternLearningMetricsSink = metricsSink;
+    this.patternLearner?.setMetricsSink(metricsSink);
+  }
+
+  async learnFromError(error: unknown, providerHint?: string): Promise<LearnedPattern | null> {
+    if (!this.isLearningEnabled() || !this.patternLearner) {
+      return null;
+    }
+
+    const activePatterns = this.getAllPatterns().filter(pattern => {
+      const confidence = (pattern as Partial<LearnedPattern>).confidence;
+      return confidence === undefined || confidence > MIN_LEARNED_PATTERN_CONFIDENCE;
+    });
+    return this.patternLearner.processError(error, providerHint, activePatterns);
+  }
+
   /**
    * Add a learned pattern
    */
@@ -242,6 +280,7 @@ export class ErrorPatternRegistry {
     } else {
       this.learnedPatterns.push(pattern);
     }
+    this.learnedPatterns = this.limitLearnedPatterns(this.learnedPatterns);
   }
 
   /**
@@ -262,34 +301,50 @@ export class ErrorPatternRegistry {
    * Update learned patterns
    */
   updateLearnedPatterns(patterns: LearnedPattern[]): void {
-    this.learnedPatterns = Array.isArray(patterns)
+    this.learnedPatterns = this.limitLearnedPatterns(patterns);
+  }
+
+  private limitLearnedPatterns(patterns: readonly LearnedPattern[]): LearnedPattern[] {
+    const validPatterns = Array.isArray(patterns)
       ? patterns.filter(isValidLearnedPattern)
       : [];
+    const configuredLimit = this.learningConfig?.maxLearnedPatterns ??
+      DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns;
+    const limit = Math.max(1, Math.floor(configuredLimit));
+
+    return [...validPatterns]
+      .sort((a, b) => {
+        if (a.confidence !== b.confidence) {
+          return b.confidence - a.confidence;
+        }
+        return b.sampleCount - a.sampleCount;
+      })
+      .slice(0, limit);
   }
 
   /**
    * Check if an error matches any registered rate limit pattern
    */
-  isRateLimitError(error: unknown): boolean {
-    return this.classifyError(error) === 'rate-limit';
+  isRateLimitError(error: unknown, providerHint?: string): boolean {
+    return this.classifyError(error, providerHint) === 'rate-limit';
   }
 
   /**
    * Classify an error so ignored notices are not counted as model failures.
    */
-  classifyError(error: unknown): ErrorClassification {
-    return this.analyzeError(error).classification;
+  classifyError(error: unknown, providerHint?: string): ErrorClassification {
+    return this.analyzeError(error, providerHint).classification;
   }
 
   /**
    * Get the matched pattern for an error, or null if no match
    * Checks default patterns first, then learned patterns
    */
-  getMatchedPattern(error: unknown): ErrorPattern | null {
-    return this.analyzeError(error).pattern;
+  getMatchedPattern(error: unknown, providerHint?: string): ErrorPattern | null {
+    return this.analyzeError(error, providerHint).pattern;
   }
 
-  private analyzeError(error: unknown): { classification: ErrorClassification; pattern: ErrorPattern | null } {
+  private analyzeError(error: unknown, providerHint?: string): { classification: ErrorClassification; pattern: ErrorPattern | null } {
     if (!error || typeof error !== 'object') {
       return { classification: 'other', pattern: null };
     }
@@ -312,6 +367,7 @@ export class ErrorPatternRegistry {
 
     // Combine all text sources for matching
     const allText = [responseBody, message, name, statusCode].join(' ').toLowerCase();
+    const normalizedProvider = normalizeProvider(providerHint) || this.inferProvider(allText);
 
     const hasStrongRateLimitSignal = this.hasStrongRateLimitSignal(allText);
     if (!hasStrongRateLimitSignal && this.matchesIgnorePattern(allText)) {
@@ -320,6 +376,13 @@ export class ErrorPatternRegistry {
 
     // Check each pattern in default patterns first
     for (const pattern of this.patterns) {
+      if (pattern.provider) {
+        const isCustomPattern = this.customPatternNames.has(pattern.name);
+        if ((normalizedProvider && normalizeProvider(pattern.provider) !== normalizedProvider) ||
+            (!normalizedProvider && isCustomPattern)) {
+          continue;
+        }
+      }
       for (const patternStr of pattern.patterns) {
         if (this.matchesPattern(patternStr, allText)) {
           return { classification: 'rate-limit', pattern };
@@ -329,8 +392,13 @@ export class ErrorPatternRegistry {
 
     // Check learned patterns
     for (const pattern of this.learnedPatterns) {
+      if (pattern.confidence <= MIN_LEARNED_PATTERN_CONFIDENCE ||
+          (pattern.provider && normalizeProvider(pattern.provider) !== normalizedProvider)) {
+        continue;
+      }
       for (const patternStr of pattern.patterns) {
         if (this.matchesPattern(patternStr, allText)) {
+          this.patternLearningMetricsSink?.recordLearnedPatternMatch();
           return { classification: 'rate-limit', pattern };
         }
       }
@@ -350,7 +418,9 @@ export class ErrorPatternRegistry {
    * Get patterns for a specific provider
    */
   getPatternsForProvider(provider: string): ErrorPattern[] {
-    return this.patterns.filter(p => !p.provider || p.provider === provider);
+    const normalizedProvider = normalizeProvider(provider);
+    return this.patterns.filter(pattern =>
+      !pattern.provider || normalizeProvider(pattern.provider) === normalizedProvider);
   }
 
   /**
@@ -398,7 +468,7 @@ export class ErrorPatternRegistry {
 
     for (const pattern of [...this.patterns, ...this.learnedPatterns]) {
       // Count by provider
-      const provider = pattern.provider || 'generic';
+      const provider = normalizeProvider(pattern.provider) || 'generic';
       byProvider[provider] = (byProvider[provider] || 0) + 1;
 
       // Count by priority range
@@ -437,6 +507,18 @@ export class ErrorPatternRegistry {
 
   private hasStrongRateLimitSignal(text: string): boolean {
     return this.matchesPattern(/\b429\b/i, text) || this.matchesPattern('rate_limit_error', text);
+  }
+
+  private inferProvider(text: string): string | undefined {
+    const providers = new Set(
+      [...this.patterns, ...this.learnedPatterns]
+        .map(pattern => normalizeProvider(pattern.provider))
+        .filter((provider): provider is string => Boolean(provider)),
+    );
+    return [...providers].find(provider => {
+      const escapedProvider = provider.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^a-z0-9_-])${escapedProvider}([^a-z0-9_-]|$)`, 'i').test(text);
+    });
   }
 
   private matchesPattern(pattern: string | RegExp, text: string): boolean {

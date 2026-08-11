@@ -4,7 +4,15 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConfigWatcher } from '../../src/config/Watcher.js';
-import { writeFileSync, unlinkSync, existsSync, mkdtempSync, rmdirSync } from 'fs';
+import {
+  writeFileSync,
+  unlinkSync,
+  existsSync,
+  mkdtempSync,
+  renameSync,
+  rmdirSync,
+  symlinkSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -171,7 +179,55 @@ describe('ConfigWatcher', () => {
       expect(mockOnReload).toHaveBeenCalledTimes(1);
     });
 
-    it('should skip reload if already reloading', async () => {
+    it('should continue watching after the config file is atomically replaced', async () => {
+      writeFileSync(configPath, JSON.stringify({ fallbackModels: [] }));
+      const watcher = new ConfigWatcher(configPath, mockLogger, mockOnReload, {
+        enabled: true,
+        watchFile: true,
+        debounceMs: 50,
+      });
+      watcher.start();
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      const replacementPath = join(testDir, '.config.json.tmp');
+      writeFileSync(replacementPath, JSON.stringify({ fallbackModels: ['first'] }));
+      renameSync(replacementPath, configPath);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const reloadsAfterReplacement = mockOnReload.mock.calls.length;
+      expect(reloadsAfterReplacement).toBeGreaterThan(0);
+
+      writeFileSync(configPath, JSON.stringify({ fallbackModels: ['second'] }));
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(mockOnReload.mock.calls.length).toBeGreaterThan(reloadsAfterReplacement);
+      watcher.stop();
+    });
+
+    it('should watch the real target of a symlinked config file', async () => {
+      writeFileSync(configPath, JSON.stringify({ fallbackModels: [] }));
+      const linkedPath = join(testDir, 'linked-config.json');
+      symlinkSync(configPath, linkedPath);
+      const watcher = new ConfigWatcher(linkedPath, mockLogger, mockOnReload, {
+        enabled: true,
+        watchFile: true,
+        debounceMs: 50,
+      });
+
+      try {
+        watcher.start();
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const replacementPath = join(testDir, '.config.json.symlink.tmp');
+        writeFileSync(replacementPath, JSON.stringify({ fallbackModels: ['updated'] }));
+        renameSync(replacementPath, configPath);
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        expect(mockOnReload).toHaveBeenCalled();
+      } finally {
+        watcher.stop();
+        unlinkSync(linkedPath);
+      }
+    });
+
+    it('should queue a follow-up reload if a change arrives while reloading', async () => {
       // Create initial config file
       writeFileSync(configPath, JSON.stringify({ fallbackModels: [] }));
 
@@ -203,9 +259,10 @@ describe('ConfigWatcher', () => {
       // Wait for both debounces
       await new Promise(resolve => setTimeout(resolve, 300));
 
-      // Should only reload once, second change should be skipped
-      expect(slowOnReload).toHaveBeenCalledTimes(1);
-      expect(mockLogger.warn).toHaveBeenCalledWith('Config changed while reload in progress, changes will be picked up after current reload completes');
+      expect(slowOnReload).toHaveBeenCalledTimes(2);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'Config changed while reload in progress, queued for after current reload completes',
+      );
     });
 
     it('should handle reload errors gracefully', async () => {
