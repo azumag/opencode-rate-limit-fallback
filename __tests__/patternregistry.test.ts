@@ -86,6 +86,21 @@ describe('ErrorPatternRegistry', () => {
       const result = registry.isRateLimitError(error);
 
       expect(result).toBe(false);
+      expect(registry.classifyError(error)).toBe('ignored');
+    });
+
+    it('should classify unmatched errors separately from ignored notices', () => {
+      expect(registry.classifyError({ message: 'Invalid API key' })).toBe('other');
+    });
+
+    it('should discard invalid ignore patterns defensively', () => {
+      const defensiveRegistry = new ErrorPatternRegistry(
+        logger,
+        ['valid notice', null, 123, ''] as any,
+      );
+
+      expect(defensiveRegistry.getIgnorePatterns()).toEqual(['valid notice']);
+      expect(() => defensiveRegistry.isRateLimitError({ message: 'usage limit' })).not.toThrow();
     });
 
     it('should not let ignore patterns swallow an explicit HTTP 429 signal', () => {
@@ -100,6 +115,7 @@ describe('ErrorPatternRegistry', () => {
       const result = registry.isRateLimitError(error);
 
       expect(result).toBe(true);
+      expect(registry.classifyError(error)).toBe('rate-limit');
     });
 
     it('should not let ignore patterns swallow an explicit rate_limit_error signal', () => {
@@ -498,7 +514,33 @@ describe('ErrorPatternRegistry', () => {
     });
   });
 
-  // Note: Pattern learning functionality has been removed as it was experimental
-  // and not being used in production. Patterns can still be manually registered
-  // via configuration using the register() and registerMany() methods.
+  describe('configurePatternLearning()', () => {
+    const learningConfig = {
+      enabled: false,
+      autoApproveThreshold: 0.8,
+      maxLearnedPatterns: 20,
+      minErrorFrequency: 3,
+      learningWindowMs: 86400000,
+    };
+
+    it('should support enabling, disabling, and re-enabling learning', () => {
+      registry.configurePatternLearning(learningConfig, '/tmp/config.json');
+      expect(registry.getPatternLearner()).toBeNull();
+      expect(registry.isLearningEnabled()).toBe(false);
+
+      registry.configurePatternLearning({ ...learningConfig, enabled: true }, '/tmp/config.json');
+      const learner = registry.getPatternLearner();
+      expect(learner).not.toBeNull();
+      expect(registry.isLearningEnabled()).toBe(true);
+
+      registry.configurePatternLearning({ ...learningConfig, enabled: false });
+      expect(registry.getPatternLearner()).toBe(learner);
+      expect(registry.isLearningEnabled()).toBe(false);
+
+      registry.configurePatternLearning({ ...learningConfig, enabled: true });
+      expect(registry.getPatternLearner()).toBe(learner);
+      expect(registry.isLearningEnabled()).toBe(true);
+    });
+  });
+
 });

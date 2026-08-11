@@ -6,7 +6,9 @@ import type { Logger } from '../../logger.js';
 import type { PluginConfig, OpenCodeClient, ReloadResult, ReloadMetrics } from '../types/index.js';
 import { loadConfig } from '../utils/config.js';
 import { ConfigValidator } from '../config/Validator.js';
+import { DEFAULT_ERROR_PATTERNS_CONFIG, DEFAULT_PATTERN_LEARNING_CONFIG } from '../config/defaults.js';
 import { safeShowToast } from '../utils/helpers.js';
+import type { ErrorPatternRegistry } from '../errors/PatternRegistry.js';
 
 /**
  * Component references for updating on reload
@@ -18,10 +20,8 @@ export interface ComponentRefs {
   metricsManager?: {
     updateConfig: (newConfig: PluginConfig) => void;
   };
-  errorPatternRegistry?: {
-    updateLearnedPatterns: (patterns: any[]) => void;
-    getPatternLearner: () => { updateConfig: (config: any) => void } | null;
-  };
+  errorPatternRegistry?: Pick<ErrorPatternRegistry,
+    'registerIgnorePatterns' | 'updateLearnedPatterns' | 'configurePatternLearning'>;
 }
 
 /**
@@ -135,7 +135,7 @@ export class ConfigReloader {
       }
 
       // Apply the new configuration
-      this.applyConfigChanges(newConfig);
+      this.applyConfigChanges(newConfig, source);
 
       result.success = true;
       this.reloadMetrics.successfulReloads++;
@@ -162,7 +162,7 @@ export class ConfigReloader {
   /**
    * Apply configuration changes to components
    */
-  private applyConfigChanges(newConfig: PluginConfig): void {
+  private applyConfigChanges(newConfig: PluginConfig, configSource: string | null): void {
     const oldConfig = this.config;
 
     // Update internal config reference
@@ -175,23 +175,28 @@ export class ConfigReloader {
       this.components.metricsManager.updateConfig(newConfig);
     }
 
-    // Reload learned patterns if errorPatterns config changed
-    if (this.components.errorPatternRegistry && newConfig.errorPatterns?.learnedPatterns) {
-      this.components.errorPatternRegistry.updateLearnedPatterns(newConfig.errorPatterns.learnedPatterns);
-      this.logger.info(`Reloaded ${newConfig.errorPatterns.learnedPatterns.length} learned patterns`);
+    // Apply all runtime error-pattern settings without requiring a restart.
+    if (this.components.errorPatternRegistry) {
+      const ignorePatterns = newConfig.errorPatterns?.ignorePatterns ?? DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns;
+      this.components.errorPatternRegistry.registerIgnorePatterns(ignorePatterns);
+      this.logger.info(`Reloaded ${ignorePatterns.length} ignore patterns`);
 
-      // Update pattern learner config if it exists
-      const patternLearner = this.components.errorPatternRegistry.getPatternLearner();
-      if (patternLearner && newConfig.errorPatterns) {
-        const patternLearningConfig = {
-          enabled: newConfig.errorPatterns.enableLearning ?? false,
-          autoApproveThreshold: newConfig.errorPatterns.autoApproveThreshold ?? 0.8,
-          maxLearnedPatterns: newConfig.errorPatterns.maxLearnedPatterns ?? 20,
-          minErrorFrequency: newConfig.errorPatterns.minErrorFrequency ?? 3,
-          learningWindowMs: newConfig.errorPatterns.learningWindowMs ?? 86400000,
-        };
-        patternLearner.updateConfig(patternLearningConfig);
+      if (newConfig.errorPatterns?.learnedPatterns) {
+        this.components.errorPatternRegistry.updateLearnedPatterns(newConfig.errorPatterns.learnedPatterns);
+        this.logger.info(`Reloaded ${newConfig.errorPatterns.learnedPatterns.length} learned patterns`);
       }
+
+      const patternLearningConfig = {
+        enabled: newConfig.errorPatterns?.enableLearning ?? DEFAULT_PATTERN_LEARNING_CONFIG.enabled,
+        autoApproveThreshold: newConfig.errorPatterns?.autoApproveThreshold ?? DEFAULT_PATTERN_LEARNING_CONFIG.autoApproveThreshold,
+        maxLearnedPatterns: newConfig.errorPatterns?.maxLearnedPatterns ?? DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns,
+        minErrorFrequency: newConfig.errorPatterns?.minErrorFrequency ?? DEFAULT_PATTERN_LEARNING_CONFIG.minErrorFrequency,
+        learningWindowMs: newConfig.errorPatterns?.learningWindowMs ?? DEFAULT_PATTERN_LEARNING_CONFIG.learningWindowMs,
+      };
+      this.components.errorPatternRegistry.configurePatternLearning(
+        patternLearningConfig,
+        configSource ?? this.configPath ?? undefined,
+      );
     }
 
     // Log configuration changes
@@ -243,6 +248,10 @@ export class ConfigReloader {
     // Check log
     if (JSON.stringify(oldConfig.log) !== JSON.stringify(newConfig.log)) {
       changes.push('log: updated');
+    }
+
+    if (JSON.stringify(oldConfig.errorPatterns) !== JSON.stringify(newConfig.errorPatterns)) {
+      changes.push('errorPatterns: updated');
     }
 
     // Check enableHealthBasedSelection

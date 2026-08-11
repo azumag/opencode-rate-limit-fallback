@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RateLimitFallback } from '../../index';
+import { FallbackHandler } from '../src/fallback/FallbackHandler.js';
 
 // Mock the OpenCode plugin module
 vi.mock('@opencode-ai/plugin', () => ({
@@ -859,6 +860,51 @@ describe('RateLimitFallback Plugin - Event Handling', () => {
     });
 
     expect(mockClient.session.abort).toHaveBeenCalled();
+  });
+
+  it('should not record ignored message.updated notices as model failures', async () => {
+    const handleMessageUpdated = vi.spyOn(FallbackHandler.prototype, 'handleMessageUpdated');
+
+    try {
+      await pluginInstance.event?.({
+        event: {
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'real-error',
+              sessionID: 'test-session',
+              providerID: 'anthropic',
+              modelID: 'claude-3-5-sonnet',
+              error: { message: 'Invalid API key' },
+            },
+          },
+        },
+      });
+      expect(handleMessageUpdated).toHaveBeenCalledWith('test-session', 'real-error', true, false);
+      handleMessageUpdated.mockClear();
+
+      await pluginInstance.event?.({
+        event: {
+          type: 'message.updated',
+          properties: {
+            info: {
+              id: 'billing-notice',
+              sessionID: 'test-session',
+              providerID: 'anthropic',
+              modelID: 'claude-3-5-sonnet',
+              error: {
+                message: 'Third-party apps now draw from your extra usage, not your plan limits.',
+              },
+            },
+          },
+        },
+      });
+
+      expect(handleMessageUpdated).not.toHaveBeenCalled();
+      expect(mockClient.session.abort).not.toHaveBeenCalled();
+    } finally {
+      handleMessageUpdated.mockRestore();
+    }
   });
 
   it('should handle session.status events with retry status', async () => {

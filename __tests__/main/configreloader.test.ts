@@ -47,6 +47,11 @@ describe('ConfigReloader', () => {
       metricsManager: {
         updateConfig: vi.fn(),
       },
+      errorPatternRegistry: {
+        registerIgnorePatterns: vi.fn(),
+        updateLearnedPatterns: vi.fn(),
+        configurePatternLearning: vi.fn(),
+      },
     };
 
     // Create mock validator
@@ -140,6 +145,66 @@ describe('ConfigReloader', () => {
           duration: 3000,
         },
       });
+    });
+
+    it('should hot reload ignore patterns, including an explicit empty list', async () => {
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        errorPatterns: { ignorePatterns: ['custom billing notice'] },
+      }));
+
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        mockValidator,
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        false,
+        0
+      );
+
+      await reloader.reloadConfig();
+      expect(mockComponents.errorPatternRegistry.registerIgnorePatterns)
+        .toHaveBeenLastCalledWith(['custom billing notice']);
+
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        errorPatterns: { ignorePatterns: [] },
+      }));
+      await reloader.reloadConfig();
+
+      expect(mockComponents.errorPatternRegistry.registerIgnorePatterns)
+        .toHaveBeenLastCalledWith([]);
+    });
+
+    it('should hot reload pattern learning with default values and the config source', async () => {
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        errorPatterns: { enableLearning: true, minErrorFrequency: 7 },
+      }));
+
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        mockValidator,
+        mockClient,
+        mockComponents,
+        testDir
+      );
+
+      await reloader.reloadConfig();
+
+      expect(mockComponents.errorPatternRegistry.configurePatternLearning).toHaveBeenCalledWith({
+        enabled: true,
+        autoApproveThreshold: 0.8,
+        maxLearnedPatterns: 20,
+        minErrorFrequency: 7,
+        learningWindowMs: 86400000,
+      }, configPath);
     });
 
     it('should track successful reload metrics', async () => {

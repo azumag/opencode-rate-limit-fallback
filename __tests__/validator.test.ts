@@ -354,8 +354,46 @@ describe('ConfigValidator', () => {
       expect(result.errors.some(e => e.path === 'errorPatterns.ignorePatterns')).toBe(true);
     });
 
-    // Skip error patterns validation tests - Validator doesn't validate individual pattern elements yet
-    // These tests can be re-enabled when pattern validation is implemented
+    it('should reject invalid ignore pattern entries', () => {
+      const config = {
+        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
+        cooldownMs: 5000,
+        enabled: true,
+        fallbackMode: 'cycle' as const,
+        errorPatterns: {
+          ignorePatterns: ['valid notice', null, 123, ''],
+        },
+      };
+
+      const result = validator.validate(config as any, { strict: true });
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.map(e => e.path)).toEqual(expect.arrayContaining([
+        'errorPatterns.ignorePatterns[1]',
+        'errorPatterns.ignorePatterns[2]',
+        'errorPatterns.ignorePatterns[3]',
+      ]));
+    });
+
+    it('should reject null ignore patterns', () => {
+      const config = {
+        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
+        cooldownMs: 5000,
+        enabled: true,
+        fallbackMode: 'cycle' as const,
+        errorPatterns: {
+          ignorePatterns: null,
+        },
+      };
+
+      const result = validator.validate(config as any, { strict: true });
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.path === 'errorPatterns.ignorePatterns')).toBe(true);
+    });
+
+    // Skip custom error pattern tests - Validator doesn't validate individual custom entries yet
+    // These tests can be re-enabled when custom pattern validation is implemented
     it.skip('should reject error pattern with empty name (strict mode)', () => {
       const config = {
         fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
