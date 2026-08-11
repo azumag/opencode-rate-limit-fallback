@@ -613,6 +613,10 @@ When OpenCode uses subagents (e.g., for complex tasks requiring specialized agen
 | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
 | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
 
+## Logging
+
+Plugin diagnostics are sent through [OpenCode's structured application log API](https://opencode.ai/docs/plugins/#logging). The plugin does not write diagnostics with `console.*`, so enabling `info` logging does not inject messages into the TUI console overlay.
+
 ## Metrics
 
  The plugin includes a metrics collection feature that tracks:
@@ -646,7 +650,7 @@ Metrics can be configured via the `metrics` section in your config file:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enabled` | boolean | `false` | Enable/disable metrics collection |
-| `output.console` | boolean | `true` | Print metrics to console |
+| `output.console` | boolean | `true` | Send metrics reports to the OpenCode application log |
 | `output.file` | string | `undefined` | Path to save metrics file |
 | `output.format` | string | `"pretty"` | Output format: `"pretty"`, `"json"`, or `"csv"` |
 | `resetInterval` | string | `"daily"` | Reset interval: `"hourly"`, `"daily"`, or `"weekly"` |

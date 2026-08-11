@@ -180,7 +180,7 @@ export class CircuitBreaker {
             variant: "warning",
             duration: 5000,
           },
-        });
+        }, this.logger);
         break;
       case 'HALF_OPEN':
         safeShowToast(this.client, {
@@ -190,7 +190,7 @@ export class CircuitBreaker {
             variant: "info",
             duration: 3000,
           },
-        });
+        }, this.logger);
         break;
       case 'CLOSED':
         // Only show toast for circuit close when transitioning from non-CLOSED state
@@ -202,7 +202,7 @@ export class CircuitBreaker {
               variant: "success",
               duration: 3000,
             },
-          });
+          }, this.logger);
         }
         break;
     }

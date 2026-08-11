@@ -6,6 +6,7 @@ import type { FallbackModel, PluginConfig, OpenCodeClient } from '../types/index
 import type { CircuitBreaker } from '../circuitbreaker/index.js';
 import type { HealthTracker } from '../health/HealthTracker.js';
 import type { DynamicPrioritizer } from '../dynamic/DynamicPrioritizer.js';
+import type { Logger } from '../../logger.js';
 import { getModelKey } from '../utils/helpers.js';
 import { safeShowToast } from '../utils/helpers.js';
 
@@ -19,19 +20,22 @@ export class ModelSelector {
   private circuitBreaker?: CircuitBreaker;
   private healthTracker?: HealthTracker;
   private dynamicPrioritizer?: DynamicPrioritizer;
+  private logger?: Logger;
 
   constructor(
     config: PluginConfig,
     client: OpenCodeClient,
     circuitBreaker?: CircuitBreaker,
     healthTracker?: HealthTracker,
-    dynamicPrioritizer?: DynamicPrioritizer
+    dynamicPrioritizer?: DynamicPrioritizer,
+    logger?: Logger,
   ) {
     this.config = config;
     this.client = client;
     this.circuitBreaker = circuitBreaker;
     this.healthTracker = healthTracker;
     this.dynamicPrioritizer = dynamicPrioritizer;
+    this.logger = logger;
     this.rateLimitedModels = new Map();
   }
 
@@ -148,7 +152,7 @@ export class ModelSelector {
               variant: "warning",
               duration: 3000,
             },
-          });
+          }, this.logger);
           return lastModel;
         } else {
           // Last model also failed, reset for next prompt

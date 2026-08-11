@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createLogger } from '../logger';
+import { createLogger, type LogEntry, type LogSink } from '../logger';
 import { MetricsManager } from '../src/metrics/MetricsManager';
 import type { MetricsConfig } from '../src/types';
 
@@ -13,13 +13,13 @@ import { writeFileSync } from 'fs';
 describe('MetricsManager', () => {
   let metricsManager: MetricsManager;
   let logger: ReturnType<typeof createLogger>;
-  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  let logSink: ReturnType<typeof vi.fn>;
   let writeFileSyncSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    logSink = vi.fn();
     writeFileSyncSpy = vi.mocked(writeFileSync).mockImplementation(() => {});
-    logger = createLogger({ level: 'silent' }, 'MetricsTest');
+    logger = createLogger({ level: 'info' }, 'MetricsTest', logSink as LogSink);
   });
 
   afterEach(() => {
@@ -555,15 +555,78 @@ describe('MetricsManager', () => {
       metricsManager = new MetricsManager(config, logger);
     });
 
-    it('should log to console when enabled', async () => {
+    it('should write to the structured log sink when enabled', async () => {
       metricsManager.recordRateLimit('anthropic', 'claude-3-5-sonnet-20250514');
       
       await metricsManager.report();
 
-      expect(consoleSpy).toHaveBeenCalled();
+      expect(logSink).toHaveBeenCalled();
+      const entry = logSink.mock.calls.at(-1)?.[0] as LogEntry;
+      expect(entry.meta).toEqual({ source: 'metrics-report' });
+      expect(entry.message).toContain('Rate Limit Fallback Metrics');
     });
 
-    it('should not log to console when disabled', async () => {
+    it('should preserve JSON output with a simple logger', async () => {
+      const localSink = vi.fn();
+      const localLogger = createLogger(
+        { level: 'warn', format: 'simple' },
+        'MetricsTest',
+        localSink as LogSink,
+      );
+      metricsManager = new MetricsManager({
+        enabled: true,
+        output: { console: true, format: 'json' },
+        resetInterval: 'daily',
+      }, localLogger);
+
+      await metricsManager.report();
+
+      const entry = localSink.mock.calls[0][0] as LogEntry;
+      expect(JSON.parse(entry.message)).toHaveProperty('rateLimits');
+      expect(entry.message).not.toContain('[INFO]');
+    });
+
+    it('should not double-wrap JSON output with a JSON logger', async () => {
+      const localSink = vi.fn();
+      const localLogger = createLogger(
+        { level: 'silent', format: 'json' },
+        'MetricsTest',
+        localSink as LogSink,
+      );
+      metricsManager = new MetricsManager({
+        enabled: true,
+        output: { console: true, format: 'json' },
+        resetInterval: 'daily',
+      }, localLogger);
+
+      await metricsManager.report();
+
+      expect(localSink).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse((localSink.mock.calls[0][0] as LogEntry).message);
+      expect(parsed).toHaveProperty('rateLimits');
+      expect(parsed).not.toHaveProperty('message');
+    });
+
+    it('should preserve the first line of CSV output', async () => {
+      const localSink = vi.fn();
+      const localLogger = createLogger(
+        { level: 'warn', format: 'simple' },
+        'MetricsTest',
+        localSink as LogSink,
+      );
+      metricsManager = new MetricsManager({
+        enabled: true,
+        output: { console: true, format: 'csv' },
+        resetInterval: 'daily',
+      }, localLogger);
+
+      await metricsManager.report();
+
+      const entry = localSink.mock.calls[0][0] as LogEntry;
+      expect(entry.message.split('\n')[0]).toBe('=== RATE_LIMITS ===');
+    });
+
+    it('should not write to the log sink when disabled', async () => {
       const config: MetricsConfig = {
         enabled: true,
         output: { console: false, format: 'json' },
@@ -573,7 +636,7 @@ describe('MetricsManager', () => {
 
       await metricsManager.report();
 
-      expect(consoleSpy).not.toHaveBeenCalled();
+      expect(logSink).not.toHaveBeenCalled();
     });
 
     it('should not report when disabled', async () => {
@@ -586,7 +649,7 @@ describe('MetricsManager', () => {
 
       await metricsManager.report();
 
-      expect(consoleSpy).not.toHaveBeenCalled();
+      expect(logSink).not.toHaveBeenCalled();
     });
 
     it('should write to file when specified', async () => {

@@ -44,6 +44,9 @@ const mockDefaultConfig = () => {
 
 // Helper to create mock client
 const createMockClient = () => ({
+  app: {
+    log: vi.fn().mockResolvedValue(undefined),
+  },
   session: {
     abort: vi.fn().mockResolvedValue(undefined),
     messages: vi.fn(),
@@ -1966,6 +1969,79 @@ describe('Cleanup Functionality', () => {
       pluginInstance.cleanup();
       pluginInstance.cleanup();
     }).not.toThrow();
+  });
+});
+
+describe('Structured application logging', () => {
+  let mockClient: ReturnType<typeof createMockClient>;
+  let pluginInstance: any;
+  let consoleSpies: Array<ReturnType<typeof vi.spyOn>>;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      fallbackModels: [
+        { providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' },
+      ],
+      enabled: true,
+      log: {
+        level: 'info',
+        format: 'simple',
+        enableTimestamp: false,
+      },
+    }));
+    consoleSpies = [
+      vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      vi.spyOn(console, 'error').mockImplementation(() => undefined),
+      vi.spyOn(console, 'debug').mockImplementation(() => undefined),
+    ];
+    mockClient = createMockClient();
+    pluginInstance = await RateLimitFallback({
+      client: mockClient as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+  });
+
+  afterEach(() => {
+    pluginInstance?.cleanup?.();
+    vi.restoreAllMocks();
+  });
+
+  it('routes info diagnostics to client.app.log without touching console', () => {
+    expect(mockClient.app.log).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        service: 'opencode-rate-limit-fallback',
+        level: 'info',
+        message: expect.stringContaining('Config loaded from'),
+        extra: expect.objectContaining({ component: 'RateLimitFallback' }),
+      }),
+    }));
+
+    for (const consoleSpy of consoleSpies) {
+      expect(consoleSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('does not serialize unrelated event bodies into diagnostics', async () => {
+    mockClient.app.log.mockClear();
+
+    await pluginInstance.event?.({
+      event: {
+        type: 'custom.event',
+        properties: {
+          message: 'Free usage exceeded',
+          secret: 'must-not-be-logged',
+        },
+      },
+    });
+
+    expect(mockClient.app.log).not.toHaveBeenCalled();
   });
 });
 

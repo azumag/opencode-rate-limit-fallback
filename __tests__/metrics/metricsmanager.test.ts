@@ -12,6 +12,7 @@ describe('MetricsManager', () => {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
+      emitRaw: vi.fn(),
     } as unknown as Logger;
 
     metricsManager = new MetricsManager(
@@ -378,12 +379,14 @@ describe('MetricsManager', () => {
   });
 
   describe('report()', () => {
-    it('should log to console when enabled', () => {
-      const logSpy = vi.spyOn(console, 'log');
+    it('should write to the structured logger when enabled', async () => {
+      await metricsManager.report();
 
-      metricsManager.report().then(() => {
-        expect(logSpy).toHaveBeenCalled();
-      });
+      expect(mockLogger.emitRaw).toHaveBeenCalledWith(
+        'info',
+        expect.stringContaining('"rateLimits"'),
+        { source: 'metrics-report' },
+      );
     });
 
     it('should not throw when writing to file fails', async () => {

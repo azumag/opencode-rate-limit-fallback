@@ -15,6 +15,17 @@ export interface LogMeta {
   [key: string]: unknown;
 }
 
+export type LogOutputLevel = Exclude<LogLevel, "silent">;
+
+export interface LogEntry {
+  level: LogOutputLevel;
+  component: string;
+  message: string;
+  meta?: LogMeta;
+}
+
+export type LogSink = (entry: LogEntry) => void | Promise<unknown>;
+
 const DEFAULT_LOG_CONFIG: LogConfig = {
   level: "warn",
   format: "simple",
@@ -28,6 +39,8 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 3,
   silent: 4,
 };
+
+const NOOP_LOG_SINK: LogSink = () => undefined;
 
 /**
  * Simple formatter for text-based log output
@@ -70,8 +83,13 @@ export class Logger {
   private component: string;
   private simpleFormatter: SimpleFormatter;
   private jsonFormatter: JsonFormatter;
+  private sink: LogSink;
 
-  constructor(config: Partial<LogConfig> = {}, component: string = "RateLimitFallback") {
+  constructor(
+    config: Partial<LogConfig> = {},
+    component: string = "RateLimitFallback",
+    sink: LogSink = NOOP_LOG_SINK,
+  ) {
     // Apply environment variable override if set
     const envLogLevel = process.env.RATE_LIMIT_FALLBACK_LOG_LEVEL as LogLevel | undefined;
 
@@ -88,6 +106,7 @@ export class Logger {
     this.component = component;
     this.simpleFormatter = new SimpleFormatter();
     this.jsonFormatter = new JsonFormatter();
+    this.sink = sink;
   }
 
   /**
@@ -120,29 +139,34 @@ export class Logger {
   }
 
   /**
-   * Select appropriate console method based on log level
+   * Write a prepared record to the configured sink.
    */
-  private getConsoleMethod(level: LogLevel): typeof console.log {
-    if (level === "error") return console.error;
-    if (level === "warn") return console.warn;
-    if (level === "debug") return console.debug;
-    return console.log;
+  private write(level: LogOutputLevel, message: string, meta?: LogMeta): void {
+    try {
+      const result = this.sink({
+        level,
+        component: this.component,
+        message,
+        meta,
+      });
+
+      if (result) {
+        void result.catch(() => undefined);
+      }
+    } catch {
+      // Silently ignore log output errors - don't let logging break the plugin
+    }
   }
 
-  /**
-   * Core log method - handles all log levels
-   */
-  private log(level: LogLevel, message: string, meta?: LogMeta): void {
+  private log(level: LogOutputLevel, message: string, meta?: LogMeta): void {
     if (!this.shouldLog(level)) {
       return;
     }
 
     try {
-      const formatted = this.format(level, message, meta);
-      const consoleMethod = this.getConsoleMethod(level);
-      consoleMethod(formatted);
+      this.write(level, this.format(level, message, meta), meta);
     } catch {
-      // Silently ignore log output errors - don't let logging break the plugin
+      // Silently ignore formatting errors - don't let logging break the plugin
     }
   }
 
@@ -173,11 +197,22 @@ export class Logger {
   error(message: string, meta?: LogMeta): void {
     this.log("error", message, meta);
   }
+
+  /**
+   * Emit explicitly requested output without level filtering or message formatting.
+   */
+  emitRaw(level: LogOutputLevel, message: string, meta?: LogMeta): void {
+    this.write(level, message, meta);
+  }
 }
 
 /**
  * Create a new logger instance
  */
-export function createLogger(config?: Partial<LogConfig>, component?: string): Logger {
-  return new Logger(config, component);
+export function createLogger(
+  config?: Partial<LogConfig>,
+  component?: string,
+  sink?: LogSink,
+): Logger {
+  return new Logger(config, component, sink);
 }

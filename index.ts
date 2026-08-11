@@ -5,7 +5,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
-import { createLogger } from "./logger.js";
+import { createLogger, type LogSink } from "./logger.js";
 
 // Import modular components
 import type {
@@ -107,6 +107,20 @@ function isSubagentSessionCreatedEvent(event: { type: string; properties?: unkno
 // ============================================================================
 
 export const RateLimitFallback: Plugin = async ({ client, directory, worktree }) => {
+  const openCodeLogSink: LogSink = ({ level, component, message, meta }) => (
+    client.app.log({
+      body: {
+        service: "opencode-rate-limit-fallback",
+        level,
+        message,
+        extra: {
+          component,
+          ...meta,
+        },
+      },
+    })
+  );
+
   // Detect headless mode (no TUI) before loading config for logging
   const isHeadless = !client.tui;
 
@@ -117,7 +131,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
     format: 'simple',
     enableTimestamp: true,
   };
-  const tempLogger = createLogger(tempLogConfig, "RateLimitFallback");
+  const tempLogger = createLogger(tempLogConfig, "RateLimitFallback", openCodeLogSink);
 
   // Log headless mode detection
   if (isHeadless) {
@@ -134,7 +148,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
   };
 
   // Create final logger instance with loaded config
-  const logger = createLogger(logConfig, "RateLimitFallback");
+  const logger = createLogger(logConfig, "RateLimitFallback", openCodeLogSink);
 
   if (configSource) {
     logger.info(`Config loaded from: ${configSource}`);
@@ -353,13 +367,6 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
 
   return {
     event: async ({ event }) => {
-      // Debug: log all events to identify how "Free usage exceeded" arrives
-      const rawEvt = event as { type: string; properties?: unknown };
-      const evtJson = JSON.stringify(rawEvt, null, 0);
-      if (evtJson.toLowerCase().includes("exceeded") || evtJson.toLowerCase().includes("free usage") || evtJson.toLowerCase().includes("credits")) {
-        logger.info("DEBUG rate-limit-related event", { type: rawEvt.type, properties: rawEvt.properties });
-      }
-
       // Handle session.error events
       if (isSessionErrorEvent(event)) {
         const { sessionID, error } = event.properties;
