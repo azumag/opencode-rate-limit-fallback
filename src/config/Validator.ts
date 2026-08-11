@@ -517,6 +517,15 @@ export class ConfigValidator {
             value: config.errorPatterns.custom,
           });
         }
+
+        if (config.errorPatterns.ignorePatterns && !Array.isArray(config.errorPatterns.ignorePatterns)) {
+          errors.push({
+            path: 'errorPatterns.ignorePatterns',
+            message: 'ignorePatterns must be an array',
+            severity: 'error',
+            value: config.errorPatterns.ignorePatterns,
+          });
+        }
       }
     }
 

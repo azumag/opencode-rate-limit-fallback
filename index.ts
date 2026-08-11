@@ -199,7 +199,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       logger.info("Headless mode — will abort session on rate limit");
 
       // Minimal setup: only error pattern detection + abort
-      const errorPatternRegistry = new ErrorPatternRegistry(logger);
+      const errorPatternRegistry = new ErrorPatternRegistry(logger, config.errorPatterns?.ignorePatterns);
       if (config.errorPatterns?.custom) {
         errorPatternRegistry.registerMany(config.errorPatterns.custom);
       }
@@ -240,14 +240,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
             const props = event.properties;
             const status = props?.status;
             if (status?.type === "retry" && status?.message) {
-              const message = status.message.toLowerCase();
-              const isRateLimitRetry =
-                message.includes("usage limit") ||
-                message.includes("usage exceeded") ||
-                message.includes("rate limit") ||
-                message.includes("high concurrency") ||
-                message.includes("reduce concurrency");
-              if (isRateLimitRetry) {
+              if (errorPatternRegistry.isRateLimitError({ message: status.message })) {
                 await abortSession(props.sessionID, "session.status retry");
               }
             }
@@ -261,7 +254,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
   }
 
   // Initialize error pattern registry
-  const errorPatternRegistry = new ErrorPatternRegistry(logger);
+  const errorPatternRegistry = new ErrorPatternRegistry(logger, config.errorPatterns?.ignorePatterns);
   if (config.errorPatterns?.custom) {
     errorPatternRegistry.registerMany(config.errorPatterns.custom);
   }
@@ -415,15 +408,7 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
         const status = props?.status;
 
         if (status?.type === "retry" && status?.message) {
-          const message = status.message.toLowerCase();
-          const isRateLimitRetry =
-            message.includes("usage limit") ||
-            message.includes("usage exceeded") ||
-            message.includes("rate limit") ||
-            message.includes("high concurrency") ||
-            message.includes("reduce concurrency");
-
-          if (isRateLimitRetry) {
+          if (errorPatternRegistry.isRateLimitError({ message: status.message })) {
             // Try fallback on any attempt, handleRateLimitFallback will manage state
             await fallbackHandler.handleRateLimitFallback(props.sessionID, "", "");
           }
