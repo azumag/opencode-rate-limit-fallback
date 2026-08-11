@@ -34,23 +34,15 @@ Add the plugin to your `opencode.json`:
 
 ```json
 {
-  "plugins": ["@azumag/opencode-rate-limit-fallback"]
+  "plugin": ["@azumag/opencode-rate-limit-fallback"]
 }
 ```
 
 OpenCode will automatically install the plugin on startup.
 
-### Manual Installation (Alternative)
-
-Copy `index.ts` to your OpenCode plugins directory:
-
-```bash
-mkdir -p ~/.config/opencode/plugins
-curl -o ~/.config/opencode/plugins/rate-limit-fallback.ts \
-  https://raw.githubusercontent.com/azumag/opencode-rate-limit-fallback/main/index.ts
-```
-
-Restart OpenCode to load the plugin.
+This release is tested with OpenCode `1.18.16`. Older OpenCode releases may
+fail to install the matching plugin SDK dependencies; upgrade OpenCode before
+installing this plugin.
 
 ## Configuration
 
