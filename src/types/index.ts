@@ -366,6 +366,19 @@ export interface SessionErrorEventProperties {
 }
 
 /**
+ * Session creation event properties. OpenCode marks child sessions with parentID.
+ */
+export interface SessionCreatedEventProperties {
+  sessionID?: string;
+  info: {
+    id: string;
+    parentID?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+/**
  * Message updated event info
  */
 export interface MessageUpdatedEventInfo {

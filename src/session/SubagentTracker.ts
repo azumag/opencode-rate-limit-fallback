@@ -11,11 +11,13 @@ import { SESSION_ENTRY_TTL_MS } from '../types/index.js';
 export class SubagentTracker {
   private sessionHierarchies: Map<string, SessionHierarchy>;
   private sessionToRootMap: Map<string, string>;
+  private sessionDepths: Map<string, number>;
   private maxSubagentDepth: number;
 
   constructor(config: PluginConfig) {
     this.sessionHierarchies = new Map();
     this.sessionToRootMap = new Map();
+    this.sessionDepths = new Map();
     this.maxSubagentDepth = config.maxSubagentDepth ?? 10;
   }
 
@@ -34,8 +36,13 @@ export class SubagentTracker {
     // This allows sessions to become roots when their first subagent is registered
     const hierarchy = this.getOrCreateHierarchy(rootSessionID);
 
-    const parentSubagent = hierarchy.subagents.get(parentSessionID);
-    const depth = parentSubagent ? parentSubagent.depth + 1 : 1;
+    const depth = (this.sessionDepths.get(parentSessionID) ?? 0) + 1;
+
+    // Retain minimal child classification even above the detailed tracking
+    // limit so enableSubagentFallback remains enforceable at every depth.
+    this.sessionToRootMap.set(sessionID, rootSessionID);
+    this.sessionDepths.set(sessionID, depth);
+    hierarchy.lastActivity = Date.now();
 
     // Enforce max depth
     if (depth > this.maxSubagentDepth) {
@@ -52,8 +59,6 @@ export class SubagentTracker {
     };
 
     hierarchy.subagents.set(sessionID, subagent);
-    this.sessionToRootMap.set(sessionID, rootSessionID);
-    hierarchy.lastActivity = Date.now();
 
     return true;
   }
@@ -63,6 +68,14 @@ export class SubagentTracker {
    */
   getRootSession(sessionID: string): string | null {
     return this.sessionToRootMap.get(sessionID) || null;
+  }
+
+  /**
+   * Check whether a session is a tracked child rather than a hierarchy root.
+   */
+  isSubagent(sessionID: string): boolean {
+    const rootSessionID = this.sessionToRootMap.get(sessionID);
+    return rootSessionID !== undefined && rootSessionID !== sessionID;
   }
 
   /**
@@ -118,12 +131,14 @@ export class SubagentTracker {
     const now = Date.now();
     for (const [rootSessionID, hierarchy] of this.sessionHierarchies.entries()) {
       if (now - hierarchy.lastActivity > SESSION_ENTRY_TTL_MS) {
-        // Clean up all subagents in this hierarchy
-        for (const subagentID of hierarchy.subagents.keys()) {
-          this.sessionToRootMap.delete(subagentID);
+        // Clean up detailed and minimal child mappings for this hierarchy.
+        for (const [sessionID, mappedRootSessionID] of this.sessionToRootMap.entries()) {
+          if (mappedRootSessionID === rootSessionID) {
+            this.sessionToRootMap.delete(sessionID);
+            this.sessionDepths.delete(sessionID);
+          }
         }
         this.sessionHierarchies.delete(rootSessionID);
-        this.sessionToRootMap.delete(rootSessionID);
       }
     }
   }
@@ -134,5 +149,13 @@ export class SubagentTracker {
   clearAll(): void {
     this.sessionHierarchies.clear();
     this.sessionToRootMap.clear();
+    this.sessionDepths.clear();
+  }
+
+  /**
+   * Apply hierarchy limits to subsequently created sessions.
+   */
+  updateConfig(config: PluginConfig): void {
+    this.maxSubagentDepth = config.maxSubagentDepth ?? 10;
   }
 }

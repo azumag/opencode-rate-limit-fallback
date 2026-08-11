@@ -49,6 +49,7 @@ describe('ConfigReloader', () => {
       },
       errorPatternRegistry: {
         registerIgnorePatterns: vi.fn(),
+        replaceCustomPatterns: vi.fn(),
         updateLearnedPatterns: vi.fn(),
         configurePatternLearning: vi.fn(),
       },
@@ -147,6 +148,36 @@ describe('ConfigReloader', () => {
       });
     });
 
+    it('should hot reload fallback models and subagent settings', async () => {
+      const fallbackModels = [{ providerID: 'google', modelID: 'gemini-fallback' }];
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        fallbackModels,
+        enableSubagentFallback: false,
+        maxSubagentDepth: 3,
+      }));
+
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        mockValidator,
+        mockClient,
+        mockComponents,
+        testDir
+      );
+
+      await reloader.reloadConfig();
+
+      expect(mockComponents.fallbackHandler.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fallbackModels,
+          enableSubagentFallback: false,
+          maxSubagentDepth: 3,
+        }),
+      );
+    });
+
     it('should hot reload ignore patterns, including an explicit empty list', async () => {
       writeFileSync(configPath, JSON.stringify({
         ...config,
@@ -180,6 +211,46 @@ describe('ConfigReloader', () => {
         .toHaveBeenLastCalledWith([]);
     });
 
+    it('should replace custom error patterns, including removals', async () => {
+      const custom = [{
+        name: 'provider-capacity',
+        patterns: ['capacity exhausted'],
+        priority: 95,
+      }];
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        errorPatterns: { custom },
+      }));
+
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        mockValidator,
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        false,
+        0
+      );
+
+      await reloader.reloadConfig();
+      expect(mockComponents.errorPatternRegistry.replaceCustomPatterns)
+        .toHaveBeenLastCalledWith(custom);
+
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        errorPatterns: { custom: [] },
+      }));
+      await reloader.reloadConfig();
+
+      expect(mockComponents.errorPatternRegistry.replaceCustomPatterns)
+        .toHaveBeenLastCalledWith([]);
+      expect(mockComponents.errorPatternRegistry.updateLearnedPatterns)
+        .toHaveBeenLastCalledWith([]);
+    });
+
     it('should hot reload pattern learning with default values and the config source', async () => {
       writeFileSync(configPath, JSON.stringify({
         ...config,
@@ -205,6 +276,103 @@ describe('ConfigReloader', () => {
         minErrorFrequency: 7,
         learningWindowMs: 86400000,
       }, configPath);
+    });
+
+    it('should sanitize malformed patterns in non-strict mode before applying them', async () => {
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        errorPatterns: {
+          custom: [null, {}],
+          learnedPatterns: [null, {}],
+        },
+      }));
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        new ConfigValidator(mockLogger),
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        false,
+        0
+      );
+
+      const result = await reloader.reloadConfig();
+
+      expect(result.success).toBe(true);
+      expect(mockComponents.errorPatternRegistry.replaceCustomPatterns).toHaveBeenCalledWith([]);
+      expect(mockComponents.errorPatternRegistry.updateLearnedPatterns).toHaveBeenCalledWith([]);
+      expect(mockComponents.fallbackHandler.updateConfig).toHaveBeenCalled();
+    });
+
+    it('should reject malformed patterns in strict mode without partial component updates', async () => {
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        configValidation: { strict: true },
+        errorPatterns: {
+          custom: [null],
+          learnedPatterns: [{}],
+        },
+      }));
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        new ConfigValidator(mockLogger),
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        false,
+        0
+      );
+
+      const result = await reloader.reloadConfig();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('errorPatterns.custom[0]');
+      expect(mockComponents.errorPatternRegistry.replaceCustomPatterns).not.toHaveBeenCalled();
+      expect(mockComponents.fallbackHandler.updateConfig).not.toHaveBeenCalled();
+      expect(mockComponents.metricsManager.updateConfig).not.toHaveBeenCalled();
+      expect(reloader.getCurrentConfig()).toEqual(config);
+    });
+
+    it('should not update fallback components when pattern application fails', async () => {
+      const custom = [{
+        name: 'provider-capacity',
+        patterns: ['capacity exhausted'],
+        priority: 95,
+      }];
+      writeFileSync(configPath, JSON.stringify({
+        ...config,
+        errorPatterns: { custom },
+      }));
+      mockComponents.errorPatternRegistry.replaceCustomPatterns.mockImplementation(() => {
+        throw new Error('pattern registry failed');
+      });
+      const reloader = new ConfigReloader(
+        config,
+        configPath,
+        mockLogger,
+        new ConfigValidator(mockLogger),
+        mockClient,
+        mockComponents,
+        testDir,
+        undefined,
+        false,
+        0
+      );
+
+      const result = await reloader.reloadConfig();
+
+      expect(result.success).toBe(false);
+      expect(mockComponents.errorPatternRegistry.registerIgnorePatterns).not.toHaveBeenCalled();
+      expect(mockComponents.errorPatternRegistry.updateLearnedPatterns).not.toHaveBeenCalled();
+      expect(mockComponents.fallbackHandler.updateConfig).not.toHaveBeenCalled();
+      expect(mockComponents.metricsManager.updateConfig).not.toHaveBeenCalled();
+      expect(reloader.getCurrentConfig()).toEqual(config);
     });
 
     it('should track successful reload metrics', async () => {

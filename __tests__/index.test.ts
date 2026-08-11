@@ -1206,22 +1206,21 @@ describe('Subagent Support', () => {
   });
 
   it('should register subagent on session.created event', async () => {
-    // Trigger subagent.session.created event
+    // Trigger the real OpenCode child-session event shape.
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-1', parentID: 'root-session-1' },
         },
       },
     });
 
-    // Verify that the subagent's rate limit is handled at the root level
+    // Verify that the subagent's own prompt and agent are retried.
     vi.mocked(mockClient.session.messages).mockResolvedValue({
       data: [
         {
-          info: { id: 'msg1', role: 'user' },
+          info: { id: 'msg1', role: 'user', agent: 'engram' },
           parts: [{ type: 'text', text: 'test message' }],
         },
       ],
@@ -1237,12 +1236,13 @@ describe('Subagent Support', () => {
       },
     });
 
-    // Fallback should be triggered (parent-centered approach - should abort root session)
+    // Replaying the root prompt would lose the child agent and repeat unrelated work.
     expect(mockClient.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         path: expect.objectContaining({
-          id: 'root-session-1',  // Root session, not subagent session
+          id: 'subagent-session-1',
         }),
+        body: expect.objectContaining({ agent: 'engram' }),
       })
     );
   });
@@ -1251,10 +1251,9 @@ describe('Subagent Support', () => {
     // Register a subagent
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-1', parentID: 'root-session-1' },
         },
       },
     });
@@ -1262,10 +1261,9 @@ describe('Subagent Support', () => {
     // Register another subagent under the same root
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-2',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-2', parentID: 'root-session-1' },
         },
       },
     });
@@ -1290,18 +1288,16 @@ describe('Subagent Support', () => {
       },
     });
 
-    // Fallback should be triggered (on root session due to parent-centered approach)
-    expect(mockClient.session.abort).toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalledWith({ path: { id: 'subagent-session-1' } });
   });
 
   it('should handle nested subagents', async () => {
     // Register root-level subagent
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-level-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-level-1', parentID: 'root-session-1' },
         },
       },
     });
@@ -1309,15 +1305,14 @@ describe('Subagent Support', () => {
     // Register nested subagent
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-level-2',
-          parentSessionID: 'subagent-level-1',
+          info: { id: 'subagent-level-2', parentID: 'subagent-level-1' },
         },
       },
     });
 
-    // Trigger rate limit on the deepest subagent - should propagate to root
+    // Trigger rate limit on the deepest subagent.
     vi.mocked(mockClient.session.messages).mockResolvedValue({
       data: [
         {
@@ -1337,18 +1332,16 @@ describe('Subagent Support', () => {
       },
     });
 
-    // Fallback should be triggered on root session (parent-centered approach)
-    expect(mockClient.session.abort).toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalledWith({ path: { id: 'subagent-level-2' } });
   });
 
-  it('should trigger fallback at root level for subagent rate limits', async () => {
+  it('should trigger fallback on the failed subagent session', async () => {
     // Register a subagent
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-1', parentID: 'root-session-1' },
         },
       },
     });
@@ -1373,18 +1366,16 @@ describe('Subagent Support', () => {
       },
     });
 
-    // Fallback should be triggered
-    expect(mockClient.session.abort).toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalledWith({ path: { id: 'subagent-session-1' } });
   });
 
-  it('should propagate model changes to subagents', async () => {
+  it('should keep a root-session fallback on the root session', async () => {
     // Register a subagent
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-1', parentID: 'root-session-1' },
         },
       },
     });
@@ -1410,9 +1401,10 @@ describe('Subagent Support', () => {
       },
     });
 
-    // Fallback should be triggered on root session
-    expect(mockClient.session.abort).toHaveBeenCalled();
-    expect(mockClient.session.promptAsync).toHaveBeenCalled();
+    expect(mockClient.session.abort).toHaveBeenCalledWith({ path: { id: 'root-session-1' } });
+    expect(mockClient.session.promptAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: 'root-session-1' } }),
+    );
   });
 
   it('should enforce maxSubagentDepth', async () => {
@@ -1441,10 +1433,9 @@ describe('Subagent Support', () => {
     // Register first level subagent (depth 1)
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-level-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-level-1', parentID: 'root-session-1' },
         },
       },
     });
@@ -1452,21 +1443,19 @@ describe('Subagent Support', () => {
     // Register second level subagent (depth 2)
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-level-2',
-          parentSessionID: 'subagent-level-1',
+          info: { id: 'subagent-level-2', parentID: 'subagent-level-1' },
         },
       },
     });
 
-    // Register third level subagent (depth 3 - should be rejected silently)
+    // Register third level subagent (depth 3 - detailed tracking is rejected).
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-level-3',
-          parentSessionID: 'subagent-level-2',
+          info: { id: 'subagent-level-3', parentID: 'subagent-level-2' },
         },
       },
     });
@@ -1484,9 +1473,7 @@ describe('Subagent Support', () => {
     // Reset abort mock to clear previous calls
     vi.mocked(mockClient.session.promptAsync).mockClear();
 
-    // Try to trigger rate limit on the rejected subagent (depth 3)
-    // Since it was not registered (exceeded max depth), it's treated as a regular session
-    // Fallback should be triggered on the session itself, not on the root
+    // Minimal child classification remains, and enabled fallback stays local.
     await pluginInstance.event?.({
       event: {
         type: 'session.error',
@@ -1497,7 +1484,6 @@ describe('Subagent Support', () => {
       },
     });
 
-    // Fallback is triggered, but on the unregistered session itself
     expect(mockClient.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         path: expect.objectContaining({
@@ -1509,7 +1495,7 @@ describe('Subagent Support', () => {
     // Reset abort mock for the next test
     vi.mocked(mockClient.session.promptAsync).mockClear();
 
-    // A valid subagent (level 2) should trigger fallback on the root session
+    // A valid subagent (level 2) should be retried on its own session.
     await pluginInstance.event?.({
       event: {
         type: 'session.error',
@@ -1520,11 +1506,10 @@ describe('Subagent Support', () => {
       },
     });
 
-    // This one should trigger fallback on root (parent-centered approach)
     expect(mockClient.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         path: expect.objectContaining({
-          id: 'root-session-1',  // Root session
+          id: 'subagent-level-2',
         }),
       })
     );
@@ -1534,6 +1519,7 @@ describe('Subagent Support', () => {
 
     const mockConfig = {
       enableSubagentFallback: false,
+      maxSubagentDepth: 1,
       fallbackModels: [
         { providerID: "anthropic", modelID: "claude-3-5-sonnet-20250514" },
         { providerID: "google", modelID: "gemini-2.5-pro" },
@@ -1554,18 +1540,29 @@ describe('Subagent Support', () => {
 
     pluginInstance = result;
 
-    // Try to register a subagent (should be ignored)
+    // Child sessions are tracked even while fallback is disabled so the setting
+    // can be enforced and later hot reloaded.
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-1', parentID: 'root-session-1' },
         },
       },
     });
 
-    // Verify that subagent rate limit is NOT handled at root level (since enableSubagentFallback is false)
+    // This child exceeds detailed hierarchy tracking but must still be
+    // recognized as a child for the disable flag.
+    await pluginInstance.event?.({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'subagent-session-2', parentID: 'subagent-session-1' },
+        },
+      },
+    });
+
+    // Verify that no child fallback is attempted.
     vi.mocked(mockClient.session.messages).mockResolvedValue({
       data: [
         {
@@ -1579,30 +1576,24 @@ describe('Subagent Support', () => {
       event: {
         type: 'session.error',
         properties: {
-          sessionID: 'subagent-session-1',
+          sessionID: 'subagent-session-2',
           error: { name: "APIError", data: { statusCode: 429 } },
         },
       },
     });
 
-    // Fallback should be triggered on the subagent session itself, not the root
-    expect(mockClient.session.promptAsync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: expect.objectContaining({
-          id: 'subagent-session-1',  // Subagent session, NOT root session
-        }),
-      })
-    );
+    expect(mockClient.session.abort).not.toHaveBeenCalled();
+    expect(mockClient.session.messages).not.toHaveBeenCalled();
+    expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
   });
 
   it('should handle multiple hierarchies independently', async () => {
     // Register subagent for first hierarchy
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-1-1',
-          parentSessionID: 'root-1',
+          info: { id: 'subagent-1-1', parentID: 'root-1' },
         },
       },
     });
@@ -1610,10 +1601,9 @@ describe('Subagent Support', () => {
     // Register subagent for second hierarchy
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-2-1',
-          parentSessionID: 'root-2',
+          info: { id: 'subagent-2-1', parentID: 'root-2' },
         },
       },
     });
@@ -1675,10 +1665,9 @@ describe('Session Hierarchy Cleanup', () => {
     // Register a subagent
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-1', parentID: 'root-session-1' },
         },
       },
     });
@@ -1724,25 +1713,23 @@ describe('Session Hierarchy Cleanup', () => {
     // Register multiple subagents
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-1',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-1', parentID: 'root-session-1' },
         },
       },
     });
 
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-session-2',
-          parentSessionID: 'root-session-1',
+          info: { id: 'subagent-session-2', parentID: 'root-session-1' },
         },
       },
     });
 
-    // Verify that both subagents trigger fallback at root level before cleanup
+    // Verify that a tracked child is retried locally before cleanup.
     vi.mocked(mockClient.session.messages).mockResolvedValue({
       data: [
         {
@@ -1762,11 +1749,10 @@ describe('Session Hierarchy Cleanup', () => {
       },
     });
 
-    // Should trigger fallback at root
     expect(mockClient.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         path: expect.objectContaining({
-          id: 'root-session-1',
+          id: 'subagent-session-1',
         }),
       })
     );
@@ -1777,7 +1763,7 @@ describe('Session Hierarchy Cleanup', () => {
     // Cleanup should not throw errors and should clear internal state
     pluginInstance.cleanup();
 
-    // After cleanup, subagent should not trigger fallback at root level anymore
+    // After cleanup, the session is no longer classified as a tracked child.
     await pluginInstance.event?.({
       event: {
         type: 'session.error',
@@ -1864,6 +1850,98 @@ describe('Config Loading Edge Cases', () => {
   });
 });
 
+describe('Learned pattern startup hydration', () => {
+  const learnedPattern = {
+    name: 'learned-provider-capacity',
+    patterns: ['vendor-e42-capacity-signal'],
+    priority: 70,
+    confidence: 0.9,
+    learnedAt: '2026-08-12T00:00:00.000Z',
+    sampleCount: 4,
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(existsSync).mockReturnValue(true);
+  });
+
+  it('matches configured learned patterns immediately in interactive mode', async () => {
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      fallbackModels: [{ providerID: 'google', modelID: 'gemini-fallback' }],
+      enabled: true,
+      errorPatterns: { learnedPatterns: [learnedPattern] },
+    }));
+    const client = createMockClient();
+    vi.mocked(client.session.messages).mockResolvedValue({
+      data: [{
+        info: { id: 'message-1', role: 'user' },
+        parts: [{ type: 'text', text: 'continue the task' }],
+      }],
+    });
+    const plugin = await RateLimitFallback({
+      client: client as any,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    await plugin.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'learned-session',
+          error: { message: 'vendor-e42-capacity-signal' },
+        },
+      },
+    });
+
+    expect(client.session.abort).toHaveBeenCalledWith({
+      path: { id: 'learned-session' },
+    });
+    expect(client.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
+      path: { id: 'learned-session' },
+      body: expect.objectContaining({
+        model: { providerID: 'google', modelID: 'gemini-fallback' },
+      }),
+    }));
+    plugin.cleanup?.();
+  });
+
+  it('matches configured learned patterns immediately in headless abort mode', async () => {
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true,
+      headlessOnRateLimit: 'abort',
+      errorPatterns: { learnedPatterns: [learnedPattern] },
+    }));
+    const client = createMockClient() as any;
+    delete client.tui;
+    const plugin = await RateLimitFallback({
+      client,
+      directory: '/test',
+      project: {} as any,
+      worktree: '/test',
+      serverUrl: new URL('http://test.com'),
+      $: {} as any,
+    });
+
+    await plugin.event?.({
+      event: {
+        type: 'session.error',
+        properties: {
+          sessionID: 'headless-learned-session',
+          error: { message: 'vendor-e42-capacity-signal' },
+        },
+      },
+    });
+
+    expect(client.session.abort).toHaveBeenCalledWith({
+      path: { id: 'headless-learned-session' },
+    });
+  });
+});
+
 describe('Cleanup Functionality', () => {
   let mockClient: ReturnType<typeof createMockClient>;
   let pluginInstance: any;
@@ -1898,10 +1976,9 @@ describe('Cleanup Functionality', () => {
     // Register a subagent to populate sessionHierarchies
     await pluginInstance.event?.({
       event: {
-        type: 'subagent.session.created',
+        type: 'session.created',
         properties: {
-          sessionID: 'subagent-1',
-          parentSessionID: 'root-1',
+          info: { id: 'subagent-1', parentID: 'root-1' },
         },
       },
     });
@@ -1926,11 +2003,10 @@ describe('Cleanup Functionality', () => {
       },
     });
 
-    // Should trigger fallback at root
     expect(mockClient.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         path: expect.objectContaining({
-          id: 'root-1',
+          id: 'subagent-1',
         }),
       })
     );

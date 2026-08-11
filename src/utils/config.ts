@@ -26,6 +26,7 @@ import {
   DEFAULT_ERROR_PATTERNS_CONFIG,
   DEFAULT_PATTERN_LEARNING_CONFIG,
 } from '../config/defaults.js';
+import { isValidErrorPattern, isValidLearnedPattern } from '../config/patternValidation.js';
 
 /**
  * Default plugin configuration
@@ -35,6 +36,8 @@ export const DEFAULT_CONFIG: PluginConfig = {
   cooldownMs: DEFAULT_COOLDOWN_MS,
   enabled: true,
   fallbackMode: DEFAULT_FALLBACK_MODE,
+  maxSubagentDepth: 10,
+  enableSubagentFallback: true,
   retryPolicy: DEFAULT_RETRY_POLICY,
   circuitBreaker: DEFAULT_CIRCUIT_BREAKER_CONFIG,
   healthPersistence: DEFAULT_HEALTH_TRACKER_CONFIG,
@@ -96,6 +99,7 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const headlessOnRateLimit = config.headlessOnRateLimit;
   const resetInterval = config.metrics?.resetInterval;
   const strategy = config.retryPolicy?.strategy;
+  const maxSubagentDepth = config.maxSubagentDepth;
   const errorPatterns = config.errorPatterns &&
     typeof config.errorPatterns === 'object' &&
     !Array.isArray(config.errorPatterns)
@@ -104,6 +108,12 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const ignorePatterns = Array.isArray(errorPatterns?.ignorePatterns)
     ? errorPatterns.ignorePatterns.filter(isValidIgnorePattern)
     : [...(DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns ?? [])];
+  const customPatterns = Array.isArray(errorPatterns?.custom)
+    ? errorPatterns.custom.filter(isValidErrorPattern)
+    : undefined;
+  const learnedPatterns = Array.isArray(errorPatterns?.learnedPatterns)
+    ? errorPatterns.learnedPatterns.filter(isValidLearnedPattern)
+    : undefined;
 
   return {
     ...DEFAULT_CONFIG,
@@ -111,6 +121,12 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
     fallbackModels: Array.isArray(config.fallbackModels) ? config.fallbackModels : DEFAULT_CONFIG.fallbackModels,
     fallbackMode: mode && VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
     headlessOnRateLimit: headlessOnRateLimit && VALID_HEADLESS_ON_RATE_LIMIT.includes(headlessOnRateLimit) ? headlessOnRateLimit : undefined,
+    maxSubagentDepth: Number.isInteger(maxSubagentDepth) && (maxSubagentDepth ?? 0) > 0
+      ? maxSubagentDepth
+      : DEFAULT_CONFIG.maxSubagentDepth,
+    enableSubagentFallback: typeof config.enableSubagentFallback === 'boolean'
+      ? config.enableSubagentFallback
+      : DEFAULT_CONFIG.enableSubagentFallback,
     retryPolicy: config.retryPolicy ? {
       ...DEFAULT_CONFIG.retryPolicy!,
       ...config.retryPolicy,
@@ -145,7 +161,9 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
     errorPatterns: errorPatterns ? {
       ...DEFAULT_ERROR_PATTERNS_CONFIG,
       ...errorPatterns,
+      custom: customPatterns,
       ignorePatterns,
+      learnedPatterns,
       enableLearning: errorPatterns.enableLearning ?? DEFAULT_PATTERN_LEARNING_CONFIG.enabled,
       autoApproveThreshold: errorPatterns.autoApproveThreshold ?? DEFAULT_PATTERN_LEARNING_CONFIG.autoApproveThreshold,
       maxLearnedPatterns: errorPatterns.maxLearnedPatterns ?? DEFAULT_PATTERN_LEARNING_CONFIG.maxLearnedPatterns,

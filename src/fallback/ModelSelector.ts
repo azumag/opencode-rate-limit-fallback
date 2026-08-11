@@ -68,8 +68,8 @@ export class ModelSelector {
     const currentKey = getModelKey(currentProviderID, currentModelID);
     const startIndex = this.config.fallbackModels.findIndex(m => getModelKey(m.providerID, m.modelID) === currentKey);
 
-    // If current model is not in the fallback list (startIndex is -1), start from 0
-    const searchStartIndex = Math.max(0, startIndex);
+    // A model outside the configured list enters the fallback chain at index 0.
+    const searchStartIndex = startIndex;
 
     // Get available models
     const candidates: FallbackModel[] = [];

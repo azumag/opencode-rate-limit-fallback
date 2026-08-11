@@ -148,19 +148,14 @@ export class FallbackHandler {
       lastUpdated: Date.now(),
     });
 
-    // If this is a root session with subagents, propagate model to all subagents
+    // Update hierarchy state for the session that was actually retried.
     if (hierarchy) {
       if (hierarchy.rootSessionID === targetSessionID) {
         hierarchy.sharedFallbackState = "completed";
         hierarchy.lastActivity = Date.now();
-
-        // Update model tracking for all subagents
-        for (const [subagentID, subagent] of hierarchy.subagents.entries()) {
-          this.currentSessionModel.set(subagentID, {
-            providerID: model.providerID,
-            modelID: model.modelID,
-            lastUpdated: Date.now(),
-          });
+      } else {
+        const subagent = hierarchy.subagents.get(targetSessionID);
+        if (subagent) {
           subagent.fallbackState = "completed";
           subagent.lastActivity = Date.now();
         }
@@ -213,9 +208,19 @@ export class FallbackHandler {
    * Handle the rate limit fallback process
    */
   async handleRateLimitFallback(sessionID: string, currentProviderID: string, currentModelID: string): Promise<void> {
-    // Resolve target session before acquiring lock
-    const rootSessionID = this.subagentTracker.getRootSession(sessionID);
-    const targetSessionID = rootSessionID || sessionID;
+    if (!this.config.enabled) {
+      return;
+    }
+
+    const isSubagent = this.subagentTracker.isSubagent(sessionID);
+    if (isSubagent && this.config.enableSubagentFallback === false) {
+      this.logger.info("Subagent fallback is disabled", { sessionID });
+      return;
+    }
+
+    // Retry the failed session itself. Replaying the root prompt would run a
+    // different agent and does not change a child agent's configured model.
+    const targetSessionID = sessionID;
 
     // Session-level lock: prevent concurrent fallback processing
     if (this.sessionLock.has(targetSessionID)) {
@@ -225,7 +230,7 @@ export class FallbackHandler {
     this.sessionLock.add(targetSessionID);
 
     try {
-      const hierarchy = this.subagentTracker.getHierarchy(sessionID);
+      const hierarchy = this.subagentTracker.getHierarchy(targetSessionID);
 
       // If no model info provided, try to get from tracked session model
       if (!currentProviderID || !currentModelID) {
@@ -268,25 +273,28 @@ export class FallbackHandler {
       }
 
       // Check deduplication with message scope
-      const dedupSessionID = rootSessionID || sessionID;
+      const dedupSessionID = targetSessionID;
       if (!this.checkAndMarkFallbackInProgress(dedupSessionID, lastUserMessage.info.id)) {
         return; // Skip - already processing
       }
 
       // Update hierarchy state if exists
-      if (hierarchy && rootSessionID) {
-        hierarchy.sharedFallbackState = "in_progress";
+      if (hierarchy) {
         hierarchy.lastActivity = Date.now();
-        const subagent = hierarchy.subagents.get(sessionID);
-        if (subagent) {
-          subagent.fallbackState = "in_progress";
-          subagent.lastActivity = Date.now();
+        if (hierarchy.rootSessionID === targetSessionID) {
+          hierarchy.sharedFallbackState = "in_progress";
+        } else {
+          const subagent = hierarchy.subagents.get(targetSessionID);
+          if (subagent) {
+            subagent.fallbackState = "in_progress";
+            subagent.lastActivity = Date.now();
+          }
         }
       }
 
       // Get or create retry state for this message
-      const state = this.getOrCreateRetryState(sessionID, lastUserMessage.info.id);
-      const stateKey = getStateKey(sessionID, lastUserMessage.info.id);
+      const state = this.getOrCreateRetryState(targetSessionID, lastUserMessage.info.id);
+      const stateKey = getStateKey(targetSessionID, lastUserMessage.info.id);
       const fallbackKey = getStateKey(dedupSessionID, lastUserMessage.info.id);
 
       // Check if retry should be attempted (using retry manager)
@@ -553,6 +561,7 @@ export class FallbackHandler {
    */
   updateConfig(newConfig: PluginConfig): void {
     this.config = newConfig;
+    this.subagentTracker.updateConfig(newConfig);
 
     // Update model selector
     this.modelSelector.updateConfig(newConfig);
