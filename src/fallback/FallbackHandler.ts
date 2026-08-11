@@ -74,7 +74,7 @@ export class FallbackHandler {
       this.dynamicPrioritizer = new DynamicPrioritizer(dynamicConfig, healthTracker, logger, metricsManager);
     }
 
-    this.modelSelector = new ModelSelector(config, client, this.circuitBreaker, healthTracker, this.dynamicPrioritizer);
+    this.modelSelector = new ModelSelector(config, client, this.circuitBreaker, healthTracker, this.dynamicPrioritizer, logger);
 
     this.currentSessionModel = new Map();
     this.modelRequestStartTimes = new Map();
@@ -204,7 +204,7 @@ export class FallbackHandler {
         variant: "success",
         duration: 3000,
       },
-    });
+    }, this.logger);
   }
 
   /**
@@ -251,7 +251,7 @@ export class FallbackHandler {
           variant: "warning",
           duration: 3000,
         },
-      });
+      }, this.logger);
 
       // Get messages from the session
       const messagesResult = await this.client.session.messages({ path: { id: targetSessionID } });
@@ -296,7 +296,7 @@ export class FallbackHandler {
             variant: "error",
             duration: 5000,
           },
-        });
+        }, this.logger);
         this.logger.warn('Retry exhausted', { sessionID: dedupSessionID, messageID: lastUserMessage.info.id });
         this.retryState.delete(stateKey);
         this.fallbackInProgress.delete(fallbackKey);
@@ -331,7 +331,7 @@ export class FallbackHandler {
             variant: "error",
             duration: 5000,
           },
-        });
+        }, this.logger);
         this.retryState.delete(stateKey);
         this.fallbackInProgress.delete(fallbackKey);
         return;
@@ -363,7 +363,7 @@ export class FallbackHandler {
           variant: "info",
           duration: 3000,
         },
-      });
+      }, this.logger);
 
       // Record fallback start time
       if (this.metricsManager) {

@@ -41,6 +41,9 @@ const mockDefaultConfig = () => {
 
 // Helper to create mock client WITHOUT TUI (simulating headless mode)
 const createHeadlessClient = () => ({
+    app: {
+        log: vi.fn().mockResolvedValue(undefined),
+    },
     session: {
         abort: vi.fn().mockResolvedValue(undefined),
         messages: vi.fn(),
@@ -52,6 +55,9 @@ const createHeadlessClient = () => ({
 
 // Helper to create mock client WITH TUI (for config loading tests)
 const createTuiClient = () => ({
+    app: {
+        log: vi.fn().mockResolvedValue(undefined),
+    },
     session: {
         abort: vi.fn().mockResolvedValue(undefined),
         messages: vi.fn(),
@@ -65,6 +71,9 @@ const createTuiClient = () => ({
 
 // Helper to create mock client WITH TUI that throws errors
 const createFailingTuiClient = () => ({
+    app: {
+        log: vi.fn().mockResolvedValue(undefined),
+    },
     session: {
         abort: vi.fn().mockResolvedValue(undefined),
         messages: vi.fn(),
@@ -120,9 +129,15 @@ describe('Headless Mode (No TUI)', () => {
     });
 
     it('should log that headless mode disables fallback', async () => {
-        // Logger uses console.log for info level messages
-        const allLogCalls = consoleLogSpy.mock.calls.map(c => String(c[0]));
+        const allLogCalls = mockClient.app.log.mock.calls.map((call: any[]) => String(call[0]?.body?.message));
         expect(allLogCalls.some(msg => msg.includes('Headless mode detected'))).toBe(true);
+    });
+
+    it('should not write headless diagnostics to console', () => {
+        expect(consoleLogSpy).not.toHaveBeenCalled();
+        expect(consoleWarnSpy).not.toHaveBeenCalled();
+        expect(consoleErrorSpy).not.toHaveBeenCalled();
+        expect(consoleInfoSpy).not.toHaveBeenCalled();
     });
 });
 
@@ -303,7 +318,7 @@ describe('Headless Mode with headlessOnRateLimit: "abort"', () => {
             },
         });
 
-        const allLogCalls = consoleLogSpy.mock.calls.map(c => String(c[0]));
+        const allLogCalls = mockClient.app.log.mock.calls.map((call: any[]) => String(call[0]?.body?.message));
         expect(allLogCalls.some(msg =>
             msg.includes('aborting session') && msg.includes('headless-session-8')
         )).toBe(true);
@@ -492,8 +507,14 @@ describe('TUI Error Handling (Toast Fails)', () => {
         expect(mockClient.session.abort).toHaveBeenCalled();
         // Verify prompt called (fallback happened)
         expect(mockClient.session.promptAsync).toHaveBeenCalled();
-        // Verify logs were printed instead of toast
-        expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining('[RateLimitFallback] Rate Limit Detected'));
+        // Verify the failed toast was routed to OpenCode's application log
+        expect(mockClient.app.log).toHaveBeenCalledWith(expect.objectContaining({
+            body: expect.objectContaining({
+                level: 'warn',
+                message: expect.stringContaining('Rate Limit Detected'),
+            }),
+        }));
+        expect(consoleWarnSpy).not.toHaveBeenCalled();
     });
 
     it('should handle missing toast.body when TUI showToast fails', async () => {
@@ -509,7 +530,8 @@ describe('TUI Error Handling (Toast Fails)', () => {
             },
         })).resolves.not.toThrow();
 
-        expect(consoleWarnSpy).toHaveBeenCalled();
+        expect(mockClient.app.log).toHaveBeenCalled();
+        expect(consoleWarnSpy).not.toHaveBeenCalled();
     });
 
     it('should handle missing toast.body.title when TUI showToast fails', async () => {
@@ -523,7 +545,8 @@ describe('TUI Error Handling (Toast Fails)', () => {
             },
         })).resolves.not.toThrow();
 
-        expect(consoleWarnSpy).toHaveBeenCalled();
+        expect(mockClient.app.log).toHaveBeenCalled();
+        expect(consoleWarnSpy).not.toHaveBeenCalled();
     });
 
     it('should handle missing toast.body.message when TUI showToast fails', async () => {
@@ -537,7 +560,8 @@ describe('TUI Error Handling (Toast Fails)', () => {
             },
         })).resolves.not.toThrow();
 
-        expect(consoleWarnSpy).toHaveBeenCalled();
+        expect(mockClient.app.log).toHaveBeenCalled();
+        expect(consoleWarnSpy).not.toHaveBeenCalled();
     });
 
     it('should handle missing toast.body.variant when TUI showToast fails', async () => {
@@ -551,6 +575,7 @@ describe('TUI Error Handling (Toast Fails)', () => {
             },
         })).resolves.not.toThrow();
 
-        expect(consoleWarnSpy).toHaveBeenCalled();
+        expect(mockClient.app.log).toHaveBeenCalled();
+        expect(consoleWarnSpy).not.toHaveBeenCalled();
     });
 });

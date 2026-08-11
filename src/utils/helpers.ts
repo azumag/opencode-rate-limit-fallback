@@ -3,6 +3,7 @@
  */
 
 import type { MessagePart, SDKMessagePartInput, ToastMessage, OpenCodeClient } from '../types/index.js';
+import type { Logger } from '../../logger.js';
 import {
   DEDUP_WINDOW_MS as DEDUP_WINDOW_MS_TYPE,
   STATE_TIMEOUT_MS as STATE_TIMEOUT_MS_TYPE,
@@ -74,30 +75,35 @@ export function getToastMessage(toast: ToastMessage): { title: string; message: 
 }
 
 /**
- * Safely show toast, falling back to console logging if TUI is missing or fails
+ * Safely show toast, falling back to the plugin logger if TUI is missing or fails
  */
-export const safeShowToast = async (client: OpenCodeClient, toast: ToastMessage) => {
+export const safeShowToast = async (client: OpenCodeClient, toast: ToastMessage, logger?: Logger) => {
   const { title, message, variant } = getToastMessage(toast);
 
-  const logToConsole = () => {
-    if (variant === "error") {
-      console.error(`[RateLimitFallback] ${title}: ${message}`);
-    } else if (variant === "warning") {
-      console.warn(`[RateLimitFallback] ${title}: ${message}`);
-    } else {
-      console.log(`[RateLimitFallback] ${title}: ${message}`);
-    }
+  const logFallback = (error?: unknown) => {
+    if (!logger) return;
+
+    const fallbackMessage = `Toast unavailable: ${title}${message ? `: ${message}` : ''}`;
+    const meta = {
+      toastVariant: variant,
+      ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+    };
+
+    const level = variant === "error"
+      ? "error"
+      : variant === "warning"
+        ? "warn"
+        : "info";
+    logger.emitRaw(level, fallbackMessage, meta);
   };
 
   try {
     if (client.tui) {
       await client.tui.showToast(toast);
     } else {
-      // TUI doesn't exist - log to console
-      logToConsole();
+      logFallback();
     }
-  } catch {
-    // TUI exists but failed to show toast - log to console
-    logToConsole();
+  } catch (error) {
+    logFallback(error);
   }
 };

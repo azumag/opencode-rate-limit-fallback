@@ -327,7 +327,7 @@ export class ConfigReloader {
         variant: 'success',
         duration: 3000,
       },
-    });
+    }, this.logger);
   }
 
   /**
@@ -341,6 +341,6 @@ export class ConfigReloader {
         variant: 'error',
         duration: 5000,
       },
-    });
+    }, this.logger);
   }
 }

@@ -713,9 +713,9 @@ export class MetricsManager {
 
     const output = this.export(this.config.output.format);
 
-    // Console output
+    // Structured application log output
     if (this.config.output.console) {
-      console.log(output);
+      this.logger.emitRaw('info', output, { source: 'metrics-report' });
     }
 
     // File output
