@@ -162,7 +162,9 @@ export function loadConfig(directory: string, worktree?: string, logger?: Logger
 
   const configPaths: string[] = [];
   for (const dir of searchDirs) {
-    configPaths.push(join(dir, ".opencode", "rate-limit-fallback.json"));
+    // XDG config home uses "opencode" (no dot), others use ".opencode"
+    const subdir = dir === xdgConfigHome ? "opencode" : ".opencode";
+    configPaths.push(join(dir, subdir, "rate-limit-fallback.json"));
     configPaths.push(join(dir, "rate-limit-fallback.json"));
   }
 
