@@ -21,7 +21,7 @@ OpenCode plugin that automatically switches to fallback models when rate limited
   - Configurable retry limits and timeouts
   - Retry statistics tracking
  - Toast notifications for user feedback
-  - Subagent session support with automatic fallback propagation to parent sessions
+  - Subagent session support with fallback on the failed child session
   - Configurable maximum subagent nesting depth
   - **Circuit breaker pattern** to prevent cascading failures from consistently failing models
   - **Metrics collection** to track rate limits, fallbacks, and model performance
@@ -429,8 +429,10 @@ The plugin supports automatic configuration reloading without requiring you to r
 - Fallback model list
 - Cooldown periods
 - Fallback mode
+- Subagent fallback and maximum-depth settings
 - Retry policies
 - Circuit breaker settings
+- Custom, ignored, and learned error patterns
 - Metrics configuration
 - Log configuration
 - Health tracking settings
@@ -602,10 +604,10 @@ Plugin automatically used Claude and Gemini models as fallbacks
 
 When OpenCode uses subagents (e.g., for complex tasks requiring specialized agents):
 
-- **Automatic Detection**: The plugin detects `subagent.session.created` events
+- **Automatic Detection**: The plugin detects child `session.created` events through `info.parentID`
 - **Hierarchy Tracking**: Maintains parent-child relationships between sessions
-- **Fallback Propagation**: When a subagent hits a rate limit, the fallback is triggered at the root session level
-- **Model Sharing**: All subagents in a hierarchy share the same fallback model
+- **Targeted Retry**: When a subagent hits a rate limit, only that child session is retried with the next model and the same agent
+- **Independent State**: Parent and sibling sessions keep their own active models and retry state
 
 ### Subagent Configuration
 
@@ -613,6 +615,10 @@ When OpenCode uses subagents (e.g., for complex tasks requiring specialized agen
 |--------|------|---------|-------------|
 | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
 | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
+
+Set `enableSubagentFallback` to `true` when you want child sessions created by
+`Task` or custom subagents to use the fallback list. With `false`, rate-limit
+events from tracked child sessions are left to OpenCode.
 
 ## Logging
 

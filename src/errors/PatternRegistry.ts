@@ -5,6 +5,7 @@
 import type { ErrorPattern, LearnedPattern, PatternLearningConfig } from '../types/index.js';
 import type { Logger } from '../../logger.js';
 import { DEFAULT_ERROR_PATTERNS_CONFIG } from '../config/defaults.js';
+import { isValidErrorPattern, isValidLearnedPattern } from '../config/patternValidation.js';
 import { PatternLearner } from './PatternLearner.js';
 
 export type ErrorClassification = 'rate-limit' | 'ignored' | 'other';
@@ -17,6 +18,8 @@ export class ErrorPatternRegistry {
   private patterns: ErrorPattern[] = [];
   private ignorePatterns: (string | RegExp)[] = [];
   private learnedPatterns: LearnedPattern[] = [];
+  private customPatternNames = new Set<string>();
+  private overriddenPatterns = new Map<string, ErrorPattern>();
   private patternLearner: PatternLearner | null = null;
   private learningConfig: PatternLearningConfig | null = null;
   // Logger is available for future use
@@ -114,6 +117,11 @@ export class ErrorPatternRegistry {
    * Register a new error pattern
    */
   register(pattern: ErrorPattern): void {
+    if (!isValidErrorPattern(pattern)) {
+      this._logger.warn('Ignoring invalid error pattern');
+      return;
+    }
+
     // Check for duplicate names
     const existingIndex = this.patterns.findIndex(p => p.name === pattern.name);
     if (existingIndex >= 0) {
@@ -133,6 +141,40 @@ export class ErrorPatternRegistry {
     for (const pattern of patterns) {
       this.register(pattern);
     }
+  }
+
+  /**
+   * Replace file-configured patterns so removals take effect during hot reload.
+   */
+  replaceCustomPatterns(patterns: readonly ErrorPattern[]): void {
+    const validPatterns = Array.isArray(patterns)
+      ? patterns.filter(isValidErrorPattern)
+      : [];
+    const nextPatterns = this.patterns.filter(pattern => !this.customPatternNames.has(pattern.name));
+    for (const overridden of this.overriddenPatterns.values()) {
+      nextPatterns.push(overridden);
+    }
+    const nextCustomPatternNames = new Set<string>();
+    const nextOverriddenPatterns = new Map<string, ErrorPattern>();
+
+    // Build the complete next state before replacing the live registry.
+    for (const pattern of validPatterns) {
+      const existingIndex = nextPatterns.findIndex(candidate => candidate.name === pattern.name);
+      if (existingIndex >= 0 && !nextCustomPatternNames.has(pattern.name)) {
+        nextOverriddenPatterns.set(pattern.name, nextPatterns[existingIndex]);
+      }
+      if (existingIndex >= 0) {
+        nextPatterns[existingIndex] = pattern;
+      } else {
+        nextPatterns.push(pattern);
+      }
+      nextCustomPatternNames.add(pattern.name);
+    }
+
+    nextPatterns.sort((a, b) => b.priority - a.priority);
+    this.patterns = nextPatterns;
+    this.customPatternNames = nextCustomPatternNames;
+    this.overriddenPatterns = nextOverriddenPatterns;
   }
 
   registerIgnorePatterns(patterns: readonly (string | RegExp)[] | null | undefined): void {
@@ -188,6 +230,11 @@ export class ErrorPatternRegistry {
    * Add a learned pattern
    */
   addLearnedPattern(pattern: LearnedPattern): void {
+    if (!isValidLearnedPattern(pattern)) {
+      this._logger.warn('Ignoring invalid learned pattern');
+      return;
+    }
+
     // Check for duplicates by name
     const existingIndex = this.learnedPatterns.findIndex(p => p.name === pattern.name);
     if (existingIndex >= 0) {
@@ -215,7 +262,9 @@ export class ErrorPatternRegistry {
    * Update learned patterns
    */
   updateLearnedPatterns(patterns: LearnedPattern[]): void {
-    this.learnedPatterns = [...patterns];
+    this.learnedPatterns = Array.isArray(patterns)
+      ? patterns.filter(isValidLearnedPattern)
+      : [];
   }
 
   /**
@@ -328,6 +377,8 @@ export class ErrorPatternRegistry {
    */
   clearAllPatterns(): void {
     this.patterns = [];
+    this.customPatternNames.clear();
+    this.overriddenPatterns.clear();
   }
 
   /**

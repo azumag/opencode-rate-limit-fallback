@@ -389,6 +389,68 @@ describe('ErrorPatternRegistry', () => {
     });
   });
 
+  describe('replaceCustomPatterns()', () => {
+    it('removes stale file-configured patterns on reload', () => {
+      registry.replaceCustomPatterns([
+        { name: 'provider-capacity', patterns: ['capacity exhausted'], priority: 95 },
+      ]);
+      expect(registry.isRateLimitError({ message: 'capacity exhausted' })).toBe(true);
+
+      registry.replaceCustomPatterns([]);
+
+      expect(registry.getPatternByName('provider-capacity')).toBeUndefined();
+      expect(registry.isRateLimitError({ message: 'capacity exhausted' })).toBe(false);
+    });
+
+    it('restores a built-in pattern after an overriding custom pattern is removed', () => {
+      const builtIn = registry.getPatternByName('http-429');
+      registry.replaceCustomPatterns([
+        { name: 'http-429', patterns: ['custom throttle'], priority: 100 },
+      ]);
+      expect(registry.getPatternByName('http-429')?.patterns).toEqual(['custom throttle']);
+
+      registry.replaceCustomPatterns([]);
+
+      expect(registry.getPatternByName('http-429')).toEqual(builtIn);
+      expect(registry.isRateLimitError({ name: 'APIError', data: { statusCode: 429 } })).toBe(true);
+    });
+
+    it('uses the last duplicate custom definition and still restores the built-in', () => {
+      const builtIn = registry.getPatternByName('http-429');
+      registry.replaceCustomPatterns([
+        { name: 'http-429', patterns: ['first override'], priority: 99 },
+        { name: 'http-429', patterns: ['last override'], priority: 100 },
+      ]);
+
+      expect(registry.getPatternByName('http-429')?.patterns).toEqual(['last override']);
+      registry.replaceCustomPatterns([]);
+      expect(registry.getPatternByName('http-429')).toEqual(builtIn);
+    });
+
+    it('ignores malformed custom entries defensively', () => {
+      expect(() => registry.replaceCustomPatterns([null, {}] as any)).not.toThrow();
+      expect(registry.isRateLimitError({ message: 'unrelated provider failure' })).toBe(false);
+    });
+  });
+
+  describe('updateLearnedPatterns()', () => {
+    it('keeps only valid learned entries defensively', () => {
+      const valid = {
+        name: 'learned-capacity',
+        patterns: ['learned capacity signal'],
+        priority: 70,
+        confidence: 0.9,
+        learnedAt: '2026-08-12T00:00:00.000Z',
+        sampleCount: 4,
+      };
+
+      registry.updateLearnedPatterns([null, {}, valid] as any);
+
+      expect(registry.getLearnedPatterns()).toEqual([valid]);
+      expect(registry.isRateLimitError({ message: 'learned capacity signal' })).toBe(true);
+    });
+  });
+
   describe('removePattern()', () => {
     it('should remove a pattern by name', () => {
       registry.register({

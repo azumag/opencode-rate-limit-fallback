@@ -106,6 +106,19 @@ describe('ConfigValidator', () => {
       expect(result.errors.some(e => e.path.includes('cooldownMs'))).toBe(true);
     });
 
+    it('should reject invalid subagent settings', () => {
+      const result = validator.validate({
+        fallbackModels: [],
+        enableSubagentFallback: 'yes' as unknown as boolean,
+        maxSubagentDepth: 1.5,
+      });
+
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: 'enableSubagentFallback' }),
+        expect.objectContaining({ path: 'maxSubagentDepth' }),
+      ]));
+    });
+
     it('should apply default values for optional properties', () => {
       const minimalConfig = {
         fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
@@ -392,9 +405,7 @@ describe('ConfigValidator', () => {
       expect(result.errors.some(e => e.path === 'errorPatterns.ignorePatterns')).toBe(true);
     });
 
-    // Skip custom error pattern tests - Validator doesn't validate individual custom entries yet
-    // These tests can be re-enabled when custom pattern validation is implemented
-    it.skip('should reject error pattern with empty name (strict mode)', () => {
+    it('should reject error pattern with empty name (strict mode)', () => {
       const config = {
         fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
         cooldownMs: 5000,
@@ -417,7 +428,7 @@ describe('ConfigValidator', () => {
       expect(result.errors.some(e => e.path.includes('errorPatterns.custom'))).toBe(true);
     });
 
-    it.skip('should reject error pattern with empty patterns array (strict mode)', () => {
+    it('should reject error pattern with empty patterns array (strict mode)', () => {
       const config = {
         fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
         cooldownMs: 5000,
@@ -440,7 +451,7 @@ describe('ConfigValidator', () => {
       expect(result.errors.some(e => e.path.includes('errorPatterns.custom'))).toBe(true);
     });
 
-    it.skip('should reject error pattern with invalid priority (strict mode)', () => {
+    it('should reject error pattern with invalid priority (strict mode)', () => {
       const config = {
         fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
         cooldownMs: 5000,
@@ -451,7 +462,7 @@ describe('ConfigValidator', () => {
             {
               name: 'pattern-name',
               patterns: ['pattern'],
-              priority: 150,
+              priority: -1,
             },
           ],
         },
@@ -461,6 +472,37 @@ describe('ConfigValidator', () => {
 
       expect(result.isValid).toBe(false);
       expect(result.errors.some(e => e.path.includes('errorPatterns.custom'))).toBe(true);
+    });
+
+    it('should reject malformed custom and learned pattern entries (strict mode)', () => {
+      const config = {
+        fallbackModels: [{ providerID: 'anthropic', modelID: 'claude-3-5-sonnet-20250514' }],
+        cooldownMs: 5000,
+        enabled: true,
+        fallbackMode: 'cycle' as const,
+        errorPatterns: {
+          custom: [null, {}],
+          learnedPatterns: [{
+            name: 'learned-pattern',
+            patterns: ['learned signal'],
+            priority: 50,
+            confidence: 2,
+            learnedAt: 'not-a-date',
+            sampleCount: 0,
+          }],
+        },
+      };
+
+      const result = validator.validate(config as any, { strict: true });
+
+      expect(result.isValid).toBe(false);
+      expect(result.errors.map(e => e.path)).toEqual(expect.arrayContaining([
+        'errorPatterns.custom[0]',
+        'errorPatterns.custom[1].patterns',
+        'errorPatterns.learnedPatterns[0].confidence',
+        'errorPatterns.learnedPatterns[0].learnedAt',
+        'errorPatterns.learnedPatterns[0].sampleCount',
+      ]));
     });
   });
 

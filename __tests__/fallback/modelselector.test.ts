@@ -331,10 +331,9 @@ describe('ModelSelector', () => {
       const attemptedModels = new Set<string>();
       const nextModel = await modelSelector.selectFallbackModel('unknown', 'model', attemptedModels);
 
-      // When model is not in list, should skip to next available model
-      // Starting from index 0, and skipping current model, we get index 1
+      // A provider-specific agent model enters the configured chain at index 0.
       expect(nextModel).toBeDefined();
-      expect(nextModel?.providerID).toBe('google');
+      expect(nextModel).toEqual(config.fallbackModels[0]);
     });
 
     it('should skip model already in attempted set', async () => {

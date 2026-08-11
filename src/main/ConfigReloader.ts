@@ -21,7 +21,7 @@ export interface ComponentRefs {
     updateConfig: (newConfig: PluginConfig) => void;
   };
   errorPatternRegistry?: Pick<ErrorPatternRegistry,
-    'registerIgnorePatterns' | 'updateLearnedPatterns' | 'configurePatternLearning'>;
+    'registerIgnorePatterns' | 'replaceCustomPatterns' | 'updateLearnedPatterns' | 'configurePatternLearning'>;
 }
 
 /**
@@ -164,27 +164,21 @@ export class ConfigReloader {
    */
   private applyConfigChanges(newConfig: PluginConfig, configSource: string | null): void {
     const oldConfig = this.config;
-
-    // Update internal config reference
-    this.config = newConfig;
-
-    // Update components with new config
-    this.components.fallbackHandler.updateConfig(newConfig);
-
-    if (this.components.metricsManager) {
-      this.components.metricsManager.updateConfig(newConfig);
-    }
+    const changedSettings = this.getChangedSettings(oldConfig, newConfig);
 
     // Apply all runtime error-pattern settings without requiring a restart.
     if (this.components.errorPatternRegistry) {
+      const customPatterns = newConfig.errorPatterns?.custom ?? [];
+      this.components.errorPatternRegistry.replaceCustomPatterns(customPatterns);
+      this.logger.info(`Reloaded ${customPatterns.length} custom error patterns`);
+
+      const learnedPatterns = newConfig.errorPatterns?.learnedPatterns ?? [];
+      this.components.errorPatternRegistry.updateLearnedPatterns(learnedPatterns);
+      this.logger.info(`Reloaded ${learnedPatterns.length} learned patterns`);
+
       const ignorePatterns = newConfig.errorPatterns?.ignorePatterns ?? DEFAULT_ERROR_PATTERNS_CONFIG.ignorePatterns;
       this.components.errorPatternRegistry.registerIgnorePatterns(ignorePatterns);
       this.logger.info(`Reloaded ${ignorePatterns.length} ignore patterns`);
-
-      if (newConfig.errorPatterns?.learnedPatterns) {
-        this.components.errorPatternRegistry.updateLearnedPatterns(newConfig.errorPatterns.learnedPatterns);
-        this.logger.info(`Reloaded ${newConfig.errorPatterns.learnedPatterns.length} learned patterns`);
-      }
 
       const patternLearningConfig = {
         enabled: newConfig.errorPatterns?.enableLearning ?? DEFAULT_PATTERN_LEARNING_CONFIG.enabled,
@@ -199,8 +193,17 @@ export class ConfigReloader {
       );
     }
 
+    // Update the remaining components only after pattern settings have been
+    // validated and applied. Keep the internal reference unchanged on failure.
+    this.components.fallbackHandler.updateConfig(newConfig);
+
+    if (this.components.metricsManager) {
+      this.components.metricsManager.updateConfig(newConfig);
+    }
+
+    this.config = newConfig;
+
     // Log configuration changes
-    const changedSettings = this.getChangedSettings(oldConfig, newConfig);
     if (changedSettings.length > 0) {
       this.logger.info('Configuration changes applied:');
       for (const change of changedSettings) {

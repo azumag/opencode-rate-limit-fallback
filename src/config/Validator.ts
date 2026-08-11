@@ -4,6 +4,10 @@
 
 import type { PluginConfig } from '../types/index.js';
 import { existsSync, readFileSync } from 'fs';
+import {
+  getErrorPatternValidationIssues,
+  getLearnedPatternValidationIssues,
+} from './patternValidation.js';
 
 /**
  * Validation error details
@@ -146,6 +150,25 @@ export class ConfigValidator {
         message: 'enabled must be a boolean',
         severity: 'error',
         value: config.enabled,
+      });
+    }
+
+    if (config.enableSubagentFallback !== undefined && typeof config.enableSubagentFallback !== 'boolean') {
+      errors.push({
+        path: 'enableSubagentFallback',
+        message: 'enableSubagentFallback must be a boolean',
+        severity: 'error',
+        value: config.enableSubagentFallback,
+      });
+    }
+
+    if (config.maxSubagentDepth !== undefined &&
+      (!Number.isInteger(config.maxSubagentDepth) || config.maxSubagentDepth < 1)) {
+      errors.push({
+        path: 'maxSubagentDepth',
+        message: 'maxSubagentDepth must be a positive integer',
+        severity: 'error',
+        value: config.maxSubagentDepth,
       });
     }
 
@@ -509,13 +532,48 @@ export class ConfigValidator {
           value: config.errorPatterns,
         });
       } else {
-        if (config.errorPatterns.custom && !Array.isArray(config.errorPatterns.custom)) {
-          errors.push({
-            path: 'errorPatterns.custom',
-            message: 'custom must be an array',
-            severity: 'error',
-            value: config.errorPatterns.custom,
-          });
+        if (config.errorPatterns.custom !== undefined) {
+          if (!Array.isArray(config.errorPatterns.custom)) {
+            errors.push({
+              path: 'errorPatterns.custom',
+              message: 'custom must be an array',
+              severity: 'error',
+              value: config.errorPatterns.custom,
+            });
+          } else {
+            config.errorPatterns.custom.forEach((pattern, index) => {
+              for (const issue of getErrorPatternValidationIssues(pattern)) {
+                errors.push({
+                  path: `errorPatterns.custom[${index}]${issue.path ? `.${issue.path}` : ''}`,
+                  message: issue.message,
+                  severity: 'error',
+                  value: pattern,
+                });
+              }
+            });
+          }
+        }
+
+        if (config.errorPatterns.learnedPatterns !== undefined) {
+          if (!Array.isArray(config.errorPatterns.learnedPatterns)) {
+            errors.push({
+              path: 'errorPatterns.learnedPatterns',
+              message: 'learnedPatterns must be an array',
+              severity: 'error',
+              value: config.errorPatterns.learnedPatterns,
+            });
+          } else {
+            config.errorPatterns.learnedPatterns.forEach((pattern, index) => {
+              for (const issue of getLearnedPatternValidationIssues(pattern)) {
+                errors.push({
+                  path: `errorPatterns.learnedPatterns[${index}]${issue.path ? `.${issue.path}` : ''}`,
+                  message: issue.message,
+                  severity: 'error',
+                  value: pattern,
+                });
+              }
+            });
+          }
         }
 
         if (config.errorPatterns.ignorePatterns !== undefined) {

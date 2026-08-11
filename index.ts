@@ -10,6 +10,7 @@ import { createLogger, type LogSink } from "./logger.js";
 // Import modular components
 import type {
   MessageUpdatedEventProperties,
+  SessionCreatedEventProperties,
   SessionErrorEventProperties,
   SessionStatusEventProperties,
 } from "./src/types/index.js";
@@ -92,14 +93,19 @@ function isSessionStatusEvent(event: { type: string; properties: unknown }): eve
 }
 
 /**
- * Check if event is a subagent session created event
+ * Check if event is a session creation event
  */
-function isSubagentSessionCreatedEvent(event: { type: string; properties?: unknown }): event is { type: "subagent.session.created"; properties: { sessionID: string; parentSessionID: string; [key: string]: unknown } } {
-  return event.type === "subagent.session.created" &&
+function isSessionCreatedEvent(event: { type: string; properties?: unknown }): event is { type: "session.created"; properties: SessionCreatedEventProperties } {
+  if (event.type === "session.created" &&
     typeof event.properties === "object" &&
-    event.properties !== null &&
-    "sessionID" in event.properties &&
-    "parentSessionID" in event.properties;
+    event.properties !== null) {
+    const info = "info" in event.properties ? event.properties.info : undefined;
+    if (typeof info !== "object" || info === null || !("id" in info) || typeof info.id !== "string") {
+      return false;
+    }
+    return !("parentID" in info) || info.parentID === undefined || typeof info.parentID === "string";
+  }
+  return false;
 }
 
 // ============================================================================
@@ -215,7 +221,10 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       // Minimal setup: only error pattern detection + abort
       const errorPatternRegistry = new ErrorPatternRegistry(logger, config.errorPatterns?.ignorePatterns);
       if (config.errorPatterns?.custom) {
-        errorPatternRegistry.registerMany(config.errorPatterns.custom);
+        errorPatternRegistry.replaceCustomPatterns(config.errorPatterns.custom);
+      }
+      if (config.errorPatterns?.learnedPatterns) {
+        errorPatternRegistry.updateLearnedPatterns(config.errorPatterns.learnedPatterns);
       }
 
       // Track sessions already aborted to avoid duplicate abort calls
@@ -270,7 +279,10 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
   // Initialize error pattern registry
   const errorPatternRegistry = new ErrorPatternRegistry(logger, config.errorPatterns?.ignorePatterns);
   if (config.errorPatterns?.custom) {
-    errorPatternRegistry.registerMany(config.errorPatterns.custom);
+    errorPatternRegistry.replaceCustomPatterns(config.errorPatterns.custom);
+  }
+  if (config.errorPatterns?.learnedPatterns) {
+    errorPatternRegistry.updateLearnedPatterns(config.errorPatterns.learnedPatterns);
   }
 
   // Initialize pattern learning if enabled
@@ -425,12 +437,15 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
         }
       }
 
-      // Handle subagent session creation events
+      // OpenCode represents subagents as regular child sessions.
       const rawEvent = event as { type: string; properties?: unknown };
-      if (isSubagentSessionCreatedEvent(rawEvent)) {
-        const { sessionID, parentSessionID } = rawEvent.properties;
-        if (config.enableSubagentFallback !== false) {
-          subagentTracker.registerSubagent(sessionID, parentSessionID);
+      if (isSessionCreatedEvent(rawEvent)) {
+        const { id, parentID } = rawEvent.properties.info;
+        if (parentID && !subagentTracker.registerSubagent(id, parentID)) {
+          logger.warn("Subagent session exceeds configured tracking depth", {
+            sessionID: id,
+            parentSessionID: parentID,
+          });
         }
       }
     },

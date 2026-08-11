@@ -44,6 +44,8 @@ describe('FallbackHandler', () => {
     mockSubagentTracker = {
       getRootSession: vi.fn().mockReturnValue(null),
       getHierarchy: vi.fn().mockReturnValue(null),
+      isSubagent: vi.fn().mockReturnValue(false),
+      updateConfig: vi.fn(),
       trackSubagent: vi.fn(),
       cleanup: vi.fn(),
     } as unknown as SubagentTracker;
@@ -246,6 +248,7 @@ describe('FallbackHandler', () => {
       };
 
       expect(() => fallbackHandler.updateConfig(newConfig)).not.toThrow();
+      expect(mockSubagentTracker.updateConfig).toHaveBeenCalledWith(newConfig);
     });
 
     it('should recreate circuit breaker when enabled', () => {
@@ -428,7 +431,7 @@ describe('FallbackHandler', () => {
   });
 
   describe('Subagent Hierarchy Handling', () => {
-    it('should handle subagent fallback request', async () => {
+    it('should retry the failed subagent session instead of replaying the root prompt', async () => {
       const hierarchy: SessionHierarchy = {
         rootSessionID: 'root-session',
         sharedFallbackState: 'completed',
@@ -442,13 +445,45 @@ describe('FallbackHandler', () => {
 
       mockSubagentTracker.getRootSession = vi.fn().mockReturnValue('root-session');
       mockSubagentTracker.getHierarchy = vi.fn().mockReturnValue(hierarchy);
+      mockSubagentTracker.isSubagent = vi.fn().mockReturnValue(true);
       mockClient.session.messages = vi.fn().mockResolvedValue({
-        data: [],
+        data: [{
+          info: { id: 'child-message', role: 'user', agent: 'engram' },
+          parts: [{ type: 'text', text: 'child task' }],
+        }],
       });
 
-      await expect(
-        fallbackHandler.handleRateLimitFallback('subagent-1', 'anthropic', 'claude-3-5-sonnet-20250514')
-      ).resolves.not.toThrow();
+      await fallbackHandler.handleRateLimitFallback('subagent-1', 'anthropic', 'claude-3-5-sonnet-20250514');
+
+      expect(mockClient.session.messages).toHaveBeenCalledWith({ path: { id: 'subagent-1' } });
+      expect(mockClient.session.promptAsync).toHaveBeenCalledWith({
+        path: { id: 'subagent-1' },
+        body: {
+          parts: [{ type: 'text', text: 'child task' }],
+          model: { providerID: 'google', modelID: 'gemini-2.5-pro' },
+          agent: 'engram',
+        },
+      });
+    });
+
+    it('should skip a tracked subagent when subagent fallback is disabled', async () => {
+      fallbackHandler.updateConfig({ ...config, enableSubagentFallback: false });
+      mockSubagentTracker.isSubagent = vi.fn().mockReturnValue(true);
+
+      await fallbackHandler.handleRateLimitFallback('subagent-1', 'anthropic', 'claude-3-5-sonnet-20250514');
+
+      expect(mockClient.session.messages).not.toHaveBeenCalled();
+      expect(mockClient.session.abort).not.toHaveBeenCalled();
+      expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
+    });
+
+    it('should stop all fallback work after enabled is hot reloaded to false', async () => {
+      fallbackHandler.updateConfig({ ...config, enabled: false });
+
+      await fallbackHandler.handleRateLimitFallback('session-1', 'anthropic', 'claude-3-5-sonnet-20250514');
+
+      expect(mockClient.session.messages).not.toHaveBeenCalled();
+      expect(mockClient.session.abort).not.toHaveBeenCalled();
     });
   });
 

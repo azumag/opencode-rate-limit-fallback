@@ -76,4 +76,49 @@ describe('config utilities', () => {
       'draw from your extra usage',
     ]);
   });
+
+  it('filters malformed custom and learned patterns before runtime use', () => {
+    const validCustom = {
+      name: 'provider-capacity',
+      patterns: ['capacity exhausted'],
+      priority: 90,
+    };
+    const validLearned = {
+      name: 'learned-capacity',
+      patterns: ['learned capacity signal'],
+      priority: 70,
+      confidence: 0.9,
+      learnedAt: '2026-08-12T00:00:00.000Z',
+      sampleCount: 4,
+    };
+    const config = validateConfig({
+      errorPatterns: {
+        custom: [null, {}, validCustom],
+        learnedPatterns: [{}, validLearned],
+      },
+    } as unknown as Partial<PluginConfig>);
+
+    expect(config.errorPatterns?.custom).toEqual([validCustom]);
+    expect(config.errorPatterns?.learnedPatterns).toEqual([validLearned]);
+  });
+
+  it('normalizes invalid subagent settings to safe defaults', () => {
+    const config = validateConfig({
+      maxSubagentDepth: 0,
+      enableSubagentFallback: 'yes',
+    } as unknown as Partial<PluginConfig>);
+
+    expect(config.maxSubagentDepth).toBe(10);
+    expect(config.enableSubagentFallback).toBe(true);
+  });
+
+  it('preserves valid subagent settings', () => {
+    const config = validateConfig({
+      maxSubagentDepth: 4,
+      enableSubagentFallback: false,
+    });
+
+    expect(config.maxSubagentDepth).toBe(4);
+    expect(config.enableSubagentFallback).toBe(false);
+  });
 });
