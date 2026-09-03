@@ -53,3 +53,5 @@ jobs:
           git add -A
           git commit -m "feat: add single-model quota wait mode"
           git push origin HEAD:feature/single-model-quota-wait
+
+# trigger after workflow exists on branch
