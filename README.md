@@ -34,7 +34,7 @@ OpenCode v2 / Web uses the `plugins` key:
 
 ```json
 {
-  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.1"]
+  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.2"]
 }
 ```
 
@@ -51,6 +51,11 @@ installations do not receive the incompatible v2 entry point.
 
 The v2 entry point currently implements `fallbackMode: "wait"`. Model-switching
 modes remain available in the v1-compatible 1.x line.
+
+In v2 wait mode, `cooldownMs` is the initial delay. Consecutive rate-limit
+failures use exponential backoff (`1x`, `2x`, `4x`, ...), capped at one hour.
+A new user prompt resets the delay to `cooldownMs`; automatic resume attempts
+preserve the existing backoff sequence.
 
 OpenCode will automatically install the plugin on startup.
 
