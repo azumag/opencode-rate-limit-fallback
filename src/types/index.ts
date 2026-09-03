@@ -22,8 +22,9 @@ export interface FallbackModel {
  * - "cycle": Reset and retry from the first model (default)
  * - "stop": Stop and show error message
  * - "retry-last": Try the last model once, then reset to first on next prompt
+ * - "wait": Keep retrying the current model after cooldown until quota recovers
  */
-export type FallbackMode = "cycle" | "stop" | "retry-last";
+export type FallbackMode = "cycle" | "stop" | "retry-last" | "wait";
 
 /**
  * Headless mode behavior on rate limit:
@@ -657,7 +658,7 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = {
 /**
  * Valid fallback modes
  */
-export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last"];
+export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last", "wait"];
 
 /**
  * Valid headless on rate limit options

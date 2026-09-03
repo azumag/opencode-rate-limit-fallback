@@ -322,8 +322,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
       };
     }
 
-    logger.info("Headless mode detected — model fallback disabled");
-    return {};
+    if (config.fallbackMode !== "wait") {
+      logger.info("Headless mode detected — model fallback disabled");
+      return {};
+    }
+
+    logger.info("Headless mode — single-model quota wait enabled");
   }
 
   // Initialize error pattern registry
