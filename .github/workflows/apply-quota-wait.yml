@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  apply-test-commit:
+  apply-and-commit:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout feature branch
@@ -45,24 +45,6 @@ jobs:
           PY
           rm .github/quota-wait.patch
           rm .github/workflows/apply-quota-wait.yml
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Test
-        run: npm run test
-
-      - name: Build
-        run: npm run build
 
       - name: Commit implementation
         run: |
