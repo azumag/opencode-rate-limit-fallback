@@ -1,0 +1,468 @@
+diff --git a/src/types/index.ts b/src/types/index.ts
+index 92601e4..0000000 100644
+--- a/src/types/index.ts
++++ b/src/types/index.ts
+@@ -19,8 +19,9 @@ export interface FallbackModel {
+  * - "cycle": Reset and retry from the first model (default)
+  * - "stop": Stop and show error message
+  * - "retry-last": Try the last model once, then reset to first on next prompt
++ * - "wait": Keep retrying the current model after cooldown until quota recovers
+  */
+-export type FallbackMode = "cycle" | "stop" | "retry-last";
++export type FallbackMode = "cycle" | "stop" | "retry-last" | "wait";
+ 
+ /**
+  * Headless mode behavior on rate limit:
+@@ -638,7 +639,7 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = {
+ /**
+  * Valid fallback modes
+  */
+-export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last"];
++export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last", "wait"];
+ 
+ /**
+  * Valid headless on rate limit options
+diff --git a/src/config/Validator.ts b/src/config/Validator.ts
+index b075e5c..0000000 100644
+--- a/src/config/Validator.ts
++++ b/src/config/Validator.ts
+@@ -108,7 +108,7 @@ export class ConfigValidator {
+         }
+ 
+         // Warning if fallbackModels is empty
+-        if (config.fallbackModels.length === 0) {
++        if (config.fallbackModels.length === 0 && config.fallbackMode !== 'wait') {
+           warnings.push({
+             path: 'fallbackModels',
+             message: 'fallbackModels is empty - no fallback models available',
+@@ -170,10 +170,11 @@ export class ConfigValidator {
+     }
+ 
+     // Validate fallbackMode
+-    if (config.fallbackMode && config.fallbackMode !== 'cycle' && config.fallbackMode !== 'stop' && config.fallbackMode !== 'retry-last') {
++    const validFallbackModes = ['cycle', 'stop', 'retry-last', 'wait'];
++    if (config.fallbackMode && !validFallbackModes.includes(config.fallbackMode)) {
+       errors.push({
+         path: 'fallbackMode',
+-        message: 'fallbackMode must be one of: cycle, stop, retry-last',
++        message: `fallbackMode must be one of: ${validFallbackModes.join(', ')}`,
+         severity: 'error',
+         value: config.fallbackMode,
+       });
+diff --git a/index.ts b/index.ts
+index f1c7261..0000000 100644
+--- a/index.ts
++++ b/index.ts
+@@ -322,8 +322,12 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
+       };
+     }
+ 
+-    logger.info("Headless mode detected — model fallback disabled");
+-    return {};
++    if (config.fallbackMode !== "wait") {
++      logger.info("Headless mode detected — model fallback disabled");
++      return {};
++    }
++
++    logger.info("Headless mode — single-model quota wait enabled");
+   }
+ 
+   // Initialize error pattern registry
+diff --git a/src/fallback/FallbackHandler.ts b/src/fallback/FallbackHandler.ts
+index 1a3d393..0000000 100644
+--- a/src/fallback/FallbackHandler.ts
++++ b/src/fallback/FallbackHandler.ts
+@@ -251,10 +251,13 @@ export class FallbackHandler {
+         this.healthTracker.recordFailure(currentProviderID, currentModelID);
+       }
+ 
++      const waitMode = this.config.fallbackMode === "wait";
+       await safeShowToast(this.client, {
+         body: {
+           title: "Rate Limit Detected",
+-          message: `Switching from ${currentModelID || 'current model'}...`,
++          message: waitMode
++            ? `Waiting to retry ${currentModelID || 'current model'}...`
++            : `Switching from ${currentModelID || 'current model'}...`,
+           variant: "warning",
+           duration: 3000,
+         },
+@@ -301,10 +304,102 @@ export class FallbackHandler {
+         }
+       }
+ 
++      const fallbackKey = getStateKey(dedupSessionID, lastUserMessage.info.id);
++
++      // Wait mode deliberately bypasses fallback model selection and the finite
++      // retry policy. Every rate-limit event aborts the server retry loop,
++      // waits for cooldownMs, and then replays the same user message with the
++      // same model and agent. If the model is still rate limited, the next
++      // rate-limit event repeats this flow indefinitely.
++      if (waitMode) {
++        if (!currentProviderID || !currentModelID) {
++          await safeShowToast(this.client, {
++            body: {
++              title: "Quota Wait Unavailable",
++              message: "Current model could not be determined",
++              variant: "error",
++              duration: 5000,
++            },
++          }, this.logger);
++          this.fallbackInProgress.delete(fallbackKey);
++          return;
++        }
++
++        const parts = extractMessageParts(lastUserMessage);
++        if (parts.length === 0) {
++          this.fallbackInProgress.delete(fallbackKey);
++          return;
++        }
++
++        // Prevent a zero-delay configuration from becoming a tight 429 loop.
++        const waitMs = Math.max(1000, this.config.cooldownMs);
++
++        // Abort immediately so OpenCode's own retry loop does not keep hitting
++        // the provider while this plugin is intentionally waiting.
++        try {
++          await this.client.session.abort({ path: { id: targetSessionID } });
++          this.logger.info("Aborted session before quota wait", {
++            sessionID: targetSessionID,
++            providerID: currentProviderID,
++            modelID: currentModelID,
++          });
++        } catch (err) {
++          this.logger.warn("Failed to abort session before quota wait", {
++            sessionID: targetSessionID,
++            error: err instanceof Error ? err.message : String(err),
++          });
++        }
++
++        await safeShowToast(this.client, {
++          body: {
++            title: "Quota Wait",
++            message: `Retrying ${currentModelID} in ${Math.ceil(waitMs / 1000)}s`,
++            variant: "warning",
++            duration: 5000,
++          },
++        }, this.logger);
++
++        this.logger.info("Waiting before retrying rate-limited model", {
++          sessionID: targetSessionID,
++          providerID: currentProviderID,
++          modelID: currentModelID,
++          waitMs,
++        });
++        await new Promise(resolve => setTimeout(resolve, waitMs));
++
++        if (this.metricsManager) {
++          this.metricsManager.recordFallbackStart();
++          this.metricsManager.recordRetryAttempt(currentModelID, waitMs);
++        }
++
++        this.fallbackMessages.set(fallbackKey, {
++          sessionID: dedupSessionID,
++          messageID: lastUserMessage.info.id,
++          timestamp: Date.now(),
++        });
++
++        await safeShowToast(this.client, {
++          body: {
++            title: "Retrying Same Model",
++            message: `Using ${currentProviderID}/${currentModelID}`,
++            variant: "info",
++            duration: 3000,
++          },
++        }, this.logger);
++
++        await this.retryWithModel(
++          dedupSessionID,
++          { providerID: currentProviderID, modelID: currentModelID },
++          parts,
++          hierarchy,
++          lastUserMessage.info.agent,
++        );
++        return;
++      }
++
+       // Get or create retry state for this message
+       const state = this.getOrCreateRetryState(targetSessionID, lastUserMessage.info.id);
+       const stateKey = getStateKey(targetSessionID, lastUserMessage.info.id);
+-      const fallbackKey = getStateKey(dedupSessionID, lastUserMessage.info.id);
+ 
+       // Check if retry should be attempted (using retry manager)
+       if (!this.retryManager.canRetry(dedupSessionID, lastUserMessage.info.id)) {
+diff --git a/__tests__/wait-mode.test.ts b/__tests__/wait-mode.test.ts
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/__tests__/wait-mode.test.ts
+@@ -0,0 +1,169 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import { ConfigValidator } from '../src/config/Validator.js';
++import { FallbackHandler } from '../src/fallback/FallbackHandler.js';
++import { MetricsManager } from '../src/metrics/MetricsManager.js';
++import { SubagentTracker } from '../src/session/SubagentTracker.js';
++import type { OpenCodeClient, PluginConfig } from '../src/types/index.js';
++import { validateConfig } from '../src/utils/config.js';
++import type { Logger } from '../logger.js';
++
++describe('single-model quota wait mode', () => {
++  let client: OpenCodeClient;
++  let logger: Logger;
++  let metrics: MetricsManager;
++  let subagents: SubagentTracker;
++  let config: PluginConfig;
++  let handler: FallbackHandler;
++
++  beforeEach(() => {
++    vi.useFakeTimers();
++
++    client = {
++      tui: { showToast: vi.fn().mockResolvedValue(undefined) },
++      session: {
++        abort: vi.fn().mockResolvedValue(undefined),
++        promptAsync: vi.fn().mockResolvedValue(undefined),
++        messages: vi.fn().mockResolvedValue({
++          data: [{
++            info: { id: 'user-1', role: 'user', agent: 'build' },
++            parts: [{ type: 'text', text: 'Continue the task' }],
++          }],
++        }),
++      },
++    } as unknown as OpenCodeClient;
++
++    logger = {
++      debug: vi.fn(),
++      info: vi.fn(),
++      warn: vi.fn(),
++      error: vi.fn(),
++    } as unknown as Logger;
++
++    metrics = new MetricsManager(
++      {
++        enabled: true,
++        output: { console: false, format: 'json', file: '' },
++        resetInterval: 'daily',
++      },
++      logger,
++    );
++
++    subagents = {
++      getRootSession: vi.fn().mockReturnValue(null),
++      getHierarchy: vi.fn().mockReturnValue(null),
++      isSubagent: vi.fn().mockReturnValue(false),
++      updateConfig: vi.fn(),
++      trackSubagent: vi.fn(),
++      cleanup: vi.fn(),
++    } as unknown as SubagentTracker;
++
++    config = {
++      fallbackModels: [],
++      cooldownMs: 1000,
++      enabled: true,
++      fallbackMode: 'wait',
++      retryPolicy: {
++        // wait mode must ignore this finite retry limit
++        maxRetries: 0,
++        strategy: 'immediate',
++        baseDelayMs: 1000,
++        maxDelayMs: 30000,
++        jitterEnabled: false,
++        jitterFactor: 0.1,
++      },
++      metrics: {
++        enabled: true,
++        output: { console: false, format: 'json', file: '' },
++        resetInterval: 'daily',
++      },
++    };
++
++    handler = new FallbackHandler(
++      config,
++      client,
++      logger,
++      metrics,
++      subagents,
++    );
++  });
++
++  afterEach(() => {
++    handler.destroy();
++    vi.useRealTimers();
++  });
++
++  it('accepts wait as a fallback mode and does not require fallback models', () => {
++    const validated = validateConfig({
++      fallbackMode: 'wait',
++      fallbackModels: [],
++    });
++    expect(validated.fallbackMode).toBe('wait');
++
++    const result = new ConfigValidator().validate({
++      fallbackMode: 'wait',
++      fallbackModels: [],
++      cooldownMs: 1000,
++    }, { strict: true, logWarnings: false });
++
++    expect(result.isValid).toBe(true);
++    expect(result.errors).toEqual([]);
++    expect(result.warnings.some(warning => warning.path === 'fallbackModels')).toBe(false);
++  });
++
++  it('aborts immediately, waits for cooldown, then retries the same model and agent', async () => {
++    const promise = handler.handleRateLimitFallback(
++      'session-1',
++      'anthropic',
++      'claude-sonnet-4',
++    );
++
++    await Promise.resolve();
++    expect(client.session.abort).toHaveBeenCalledTimes(1);
++    expect(client.session.promptAsync).not.toHaveBeenCalled();
++
++    await vi.advanceTimersByTimeAsync(1000);
++    // retryWithModel performs its normal abort + 500ms settle delay.
++    await vi.advanceTimersByTimeAsync(500);
++    await promise;
++
++    expect(client.session.promptAsync).toHaveBeenCalledWith({
++      path: { id: 'session-1' },
++      body: {
++        parts: [{ type: 'text', text: 'Continue the task' }],
++        model: { providerID: 'anthropic', modelID: 'claude-sonnet-4' },
++        agent: 'build',
++      },
++    });
++  });
++
++  it('keeps retrying across repeated rate-limit events even when maxRetries is zero', async () => {
++    const first = handler.handleRateLimitFallback(
++      'session-1',
++      'anthropic',
++      'claude-sonnet-4',
++    );
++    await vi.advanceTimersByTimeAsync(1500);
++    await first;
++
++    vi.mocked(client.session.messages).mockResolvedValue({
++      data: [{
++        info: { id: 'user-2', role: 'user', agent: 'build' },
++        parts: [{ type: 'text', text: 'Continue the task' }],
++      }],
++    });
++
++    const second = handler.handleRateLimitFallback(
++      'session-1',
++      'anthropic',
++      'claude-sonnet-4',
++    );
++    await vi.advanceTimersByTimeAsync(1500);
++    await second;
++
++    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
++    expect(vi.mocked(client.session.promptAsync).mock.calls.every(([request]) =>
++      request.body.model.providerID === 'anthropic' &&
++      request.body.model.modelID === 'claude-sonnet-4'
++    )).toBe(true);
++  });
++});
+diff --git a/README.md b/README.md
+index 9f8b38e..0000000 100644
+--- a/README.md
++++ b/README.md
+@@ -12,7 +12,7 @@ OpenCode plugin that automatically switches to fallback models when rate limited
+ - Automatically aborts the current request and retries with a fallback model
+ - Preserves the active OpenCode agent (`build`, `plan`, or a custom agent) when retrying
+ - Configurable fallback model list with priority order
+-- Three fallback modes: `cycle`, `stop`, and `retry-last`
++- Four fallback modes: `cycle`, `stop`, `retry-last`, and single-model `wait`
+ - **Headless mode support** (`opencode run`): disable fallback, abort, or use single-model quota wait
+ - Session model tracking for sequential fallback across multiple rate limits
+ - Cooldown period to prevent immediate retry on rate-limited models
+@@ -300,4 +300,7 @@ When running in headless mode (no TUI), model fallback is disabled by default be
+ 
+ When running in headless mode (no TUI), model fallback is disabled by default because headless sessions should use their configured model only.
+ 
++`fallbackMode: "wait"` is the exception: it keeps the same model and runs the
++quota-wait loop in headless mode unless `headlessOnRateLimit` is `"abort"`.
++
+ You can control what happens when a rate limit is detected in headless mode using the `headlessOnRateLimit` option:
+@@ -334,5 +334,6 @@ When running in headless mode (no TUI), model fallback is disabled by default be
+ | `"cycle"` | Reset and retry from the first model when all models are exhausted (default) |
+ | `"stop"` | Stop and show error when all models are exhausted |
+ | `"retry-last"` | Try the last model once more, then reset to first on next prompt |
++| `"wait"` | Keep the current model, wait `cooldownMs`, and retry it indefinitely on rate limits |
+ 
+ ### Retry Policy
+diff --git a/docs/quota-wait-mode.md b/docs/quota-wait-mode.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/docs/quota-wait-mode.md
+@@ -0,0 +1,66 @@
++# Single-model quota wait mode
++
++`fallbackMode: "wait"` is the simplest unattended rate-limit mode. It never
++switches models. When the active model hits a recognized rate/quota limit, the
++plugin aborts the current server retry loop, waits for `cooldownMs`, and retries
++the same user message with the same model and OpenCode agent.
++
++If the retry is still rate limited, the next rate-limit event repeats the same
++flow. There is intentionally no retry-count limit.
++
++## Configuration
++
++```json
++{
++  "enabled": true,
++  "fallbackMode": "wait",
++  "cooldownMs": 60000,
++  "fallbackModels": []
++}
++```
++
++`fallbackModels` may be empty in this mode because model selection is bypassed.
++
++## Behavior
++
++```text
++current model
++    |
++    | 429 / quota exceeded / usage limit
++    v
++abort OpenCode's current retry loop
++    |
++    v
++wait cooldownMs
++    |
++    v
++retry the same message with the same model + agent
++    |
++    +-- success --> continue normally
++    |
++    +-- rate limited --> repeat forever
++```
++
++The effective wait is at least 1 second, even if `cooldownMs` is configured
++lower, to avoid a tight 429 loop.
++
++## Retry policy interaction
++
++`retryPolicy.maxRetries` and `retryPolicy.timeoutMs` do not stop quota wait
++mode. Those settings remain the finite retry policy for model-fallback modes;
++quota wait is explicitly intended to survive long quota-reset windows.
++
++## Current scope
++
++- Only errors already classified by the plugin as rate/quota limits enter this
++  loop. Authentication, invalid-request, missing-model, and unrelated server
++  errors do not.
++- The first version uses `cooldownMs` as a fixed polling interval. Provider
++  `Retry-After` / quota-reset timestamps are not parsed yet.
++- OpenCode headless mode (`opencode run`) is supported. An explicit
++  `headlessOnRateLimit: "abort"` still takes precedence and aborts instead of
++  waiting.
++- Stop the OpenCode session/process to stop waiting.
++
++This mode is intentionally independent from a future multi-model behavior such
++as `A -> B -> wait -> A -> B`.
