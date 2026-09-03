@@ -11,8 +11,8 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 - Automatically aborts the current request and retries with a fallback model
 - Preserves the active OpenCode agent (`build`, `plan`, or a custom agent) when retrying
 - Configurable fallback model list with priority order
-- Three fallback modes: `cycle`, `stop`, and `retry-last`
-- **Headless mode support** (`opencode run`): disable fallback or abort on rate limit
+- Four fallback modes: `cycle`, `stop`, `retry-last`, and single-model `wait`
+- **Headless mode support** (`opencode run`): disable fallback, abort, or use single-model quota wait
 - Session model tracking for sequential fallback across multiple rate limits
 - Cooldown period to prevent immediate retry on rate-limited models
 - **Exponential backoff with configurable retry policies**
@@ -297,6 +297,9 @@ my-repo/
 
 When running in headless mode (no TUI), model fallback is disabled by default because headless sessions should use their configured model only.
 
+`fallbackMode: "wait"` is the exception: it keeps the same model and runs the
+quota-wait loop in headless mode unless `headlessOnRateLimit` is `"abort"`.
+
 You can control what happens when a rate limit is detected in headless mode using the `headlessOnRateLimit` option:
 
 | Value | Description |
@@ -320,6 +323,7 @@ The `"abort"` option is useful when you want `opencode run` to fail fast on rate
 | `"cycle"` | Reset and retry from the first model when all models are exhausted (default) |
 | `"stop"` | Stop and show error when all models are exhausted |
 | `"retry-last"` | Try the last model once more, then reset to first on next prompt |
+| `"wait"` | Keep the current model, wait `cooldownMs`, and retry it indefinitely on rate limits |
 
 ### Retry Policy
 

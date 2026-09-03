@@ -29,6 +29,12 @@ export class FallbackHandler {
   private fallbackInProgress: Map<string, number>;
   private fallbackMessages: Map<string, { sessionID: string; messageID: string; timestamp: number }>;
   private sessionLock: Set<string>;
+  private pendingQuotaWaits: Map<string, {
+    timer: ReturnType<typeof setTimeout>;
+    resolve: (completed: boolean) => void;
+  }>;
+  private deletedQuotaSessions: Set<string>;
+  private destroyed: boolean;
 
   // Metrics manager reference
   private metricsManager: MetricsManager;
@@ -82,9 +88,56 @@ export class FallbackHandler {
     this.fallbackInProgress = new Map();
     this.fallbackMessages = new Map();
     this.sessionLock = new Set();
+    this.pendingQuotaWaits = new Map();
+    this.deletedQuotaSessions = new Set();
+    this.destroyed = false;
 
     // Initialize retry manager
     this.retryManager = new RetryManager(config.retryPolicy || {}, logger);
+  }
+
+  /**
+   * Wait for a quota cooldown while allowing plugin cleanup, session deletion,
+   * or a disabling config reload to cancel the pending replay.
+   */
+  private waitForQuotaCooldown(sessionID: string, delayMs: number): Promise<boolean> {
+    if (this.destroyed || this.deletedQuotaSessions.has(sessionID) || !this.config.enabled || this.config.fallbackMode !== "wait") {
+      return Promise.resolve(false);
+    }
+
+    return new Promise(resolve => {
+      const pending = {
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+        resolve,
+      };
+      pending.timer = setTimeout(() => {
+        this.pendingQuotaWaits.delete(sessionID);
+        resolve(true);
+      }, delayMs);
+      this.pendingQuotaWaits.set(sessionID, pending);
+    });
+  }
+
+  /** Cancel a pending quota wait for one session. */
+  cancelQuotaWait(sessionID: string): void {
+    this.deletedQuotaSessions.add(sessionID);
+    this.cancelPendingQuotaWait(sessionID);
+  }
+
+  private cancelPendingQuotaWait(sessionID: string): void {
+    const pending = this.pendingQuotaWaits.get(sessionID);
+    if (!pending) return;
+
+    clearTimeout(pending.timer);
+    this.pendingQuotaWaits.delete(sessionID);
+    pending.resolve(false);
+    this.logger.info("Cancelled pending quota wait", { sessionID });
+  }
+
+  private cancelAllQuotaWaits(): void {
+    for (const sessionID of [...this.pendingQuotaWaits.keys()]) {
+      this.cancelPendingQuotaWait(sessionID);
+    }
   }
 
   /**
@@ -251,10 +304,13 @@ export class FallbackHandler {
         this.healthTracker.recordFailure(currentProviderID, currentModelID);
       }
 
+      const waitMode = this.config.fallbackMode === "wait";
       await safeShowToast(this.client, {
         body: {
           title: "Rate Limit Detected",
-          message: `Switching from ${currentModelID || 'current model'}...`,
+          message: waitMode
+            ? `Waiting to retry ${currentModelID || 'current model'}...`
+            : `Switching from ${currentModelID || 'current model'}...`,
           variant: "warning",
           duration: 3000,
         },
@@ -292,10 +348,110 @@ export class FallbackHandler {
         }
       }
 
+      const fallbackKey = getStateKey(dedupSessionID, lastUserMessage.info.id);
+
+      // Wait mode deliberately bypasses fallback model selection and the finite
+      // retry policy. Every rate-limit event aborts the server retry loop,
+      // waits for cooldownMs, and then replays the same user message with the
+      // same model and agent. If the model is still rate limited, the next
+      // rate-limit event repeats this flow indefinitely.
+      if (waitMode) {
+        if (!currentProviderID || !currentModelID) {
+          await safeShowToast(this.client, {
+            body: {
+              title: "Quota Wait Unavailable",
+              message: "Current model could not be determined",
+              variant: "error",
+              duration: 5000,
+            },
+          }, this.logger);
+          this.fallbackInProgress.delete(fallbackKey);
+          return;
+        }
+
+        const parts = extractMessageParts(lastUserMessage);
+        if (parts.length === 0) {
+          this.fallbackInProgress.delete(fallbackKey);
+          return;
+        }
+
+        // Prevent a zero-delay configuration from becoming a tight 429 loop.
+        const waitMs = Math.max(1000, this.config.cooldownMs);
+
+        // Abort immediately so OpenCode's own retry loop does not keep hitting
+        // the provider while this plugin is intentionally waiting.
+        try {
+          await this.client.session.abort({ path: { id: targetSessionID } });
+          this.logger.info("Aborted session before quota wait", {
+            sessionID: targetSessionID,
+            providerID: currentProviderID,
+            modelID: currentModelID,
+          });
+        } catch (err) {
+          this.logger.warn("Failed to abort session before quota wait", {
+            sessionID: targetSessionID,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        await safeShowToast(this.client, {
+          body: {
+            title: "Quota Wait",
+            message: `Retrying ${currentModelID} in ${Math.ceil(waitMs / 1000)}s`,
+            variant: "warning",
+            duration: 5000,
+          },
+        }, this.logger);
+
+        this.logger.info("Waiting before retrying rate-limited model", {
+          sessionID: targetSessionID,
+          providerID: currentProviderID,
+          modelID: currentModelID,
+          waitMs,
+        });
+        const waitCompleted = await this.waitForQuotaCooldown(targetSessionID, waitMs);
+        if (!waitCompleted || this.destroyed || !this.config.enabled || this.config.fallbackMode !== "wait") {
+          this.fallbackInProgress.delete(fallbackKey);
+          return;
+        }
+
+        if (this.metricsManager) {
+          this.metricsManager.recordFallbackStart();
+          this.metricsManager.recordRetryAttempt(currentModelID, waitMs);
+        }
+
+        this.fallbackMessages.set(fallbackKey, {
+          sessionID: dedupSessionID,
+          messageID: lastUserMessage.info.id,
+          timestamp: Date.now(),
+        });
+
+        await safeShowToast(this.client, {
+          body: {
+            title: "Retrying Same Model",
+            message: `Using ${currentProviderID}/${currentModelID}`,
+            variant: "info",
+            duration: 3000,
+          },
+        }, this.logger);
+
+        await this.retryWithModel(
+          dedupSessionID,
+          { providerID: currentProviderID, modelID: currentModelID },
+          parts,
+          hierarchy,
+          lastUserMessage.info.agent,
+        );
+
+        // A subsequent rate-limit event from the replay is a new wait cycle,
+        // even when OpenCode retains the original user-message ID.
+        this.fallbackInProgress.delete(fallbackKey);
+        return;
+      }
+
       // Get or create retry state for this message
       const state = this.getOrCreateRetryState(targetSessionID, lastUserMessage.info.id);
       const stateKey = getStateKey(targetSessionID, lastUserMessage.info.id);
-      const fallbackKey = getStateKey(dedupSessionID, lastUserMessage.info.id);
 
       // Check if retry should be attempted (using retry manager)
       if (!this.retryManager.canRetry(dedupSessionID, lastUserMessage.info.id)) {
@@ -542,12 +698,15 @@ export class FallbackHandler {
    * Clean up all resources
    */
   destroy(): void {
+    this.destroyed = true;
+    this.cancelAllQuotaWaits();
     this.currentSessionModel.clear();
     this.modelRequestStartTimes.clear();
     this.retryState.clear();
     this.fallbackInProgress.clear();
     this.fallbackMessages.clear();
     this.sessionLock.clear();
+    this.deletedQuotaSessions.clear();
     this.retryManager.destroy();
 
     // Destroy circuit breaker
@@ -561,6 +720,9 @@ export class FallbackHandler {
    */
   updateConfig(newConfig: PluginConfig): void {
     this.config = newConfig;
+    if (!newConfig.enabled || newConfig.fallbackMode !== "wait") {
+      this.cancelAllQuotaWaits();
+    }
     this.subagentTracker.updateConfig(newConfig);
 
     // Update model selector

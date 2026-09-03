@@ -579,3 +579,80 @@ describe('TUI Error Handling (Toast Fails)', () => {
         expect(consoleWarnSpy).not.toHaveBeenCalled();
     });
 });
+
+describe('Headless quota wait cancellation', () => {
+    let pluginInstance: any;
+    let mockClient: any;
+
+    beforeEach(async () => {
+        vi.useFakeTimers();
+        vi.resetAllMocks();
+        vi.mocked(existsSync).mockReturnValue(true);
+        vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+            enabled: true,
+            fallbackMode: 'wait',
+            cooldownMs: 60000,
+            fallbackModels: [],
+        }));
+        mockClient = createHeadlessClient();
+        mockClient.session.messages.mockResolvedValue({
+            data: [{
+                info: { id: 'user-1', role: 'user', agent: 'build' },
+                parts: [{ type: 'text', text: 'Continue the task' }],
+            }],
+        });
+
+        pluginInstance = await RateLimitFallback({
+            client: mockClient as any,
+            directory: '/test',
+            project: {} as any,
+            worktree: '/test',
+            serverUrl: new URL('http://test.com'),
+            $: {} as any,
+        });
+    });
+
+    afterEach(() => {
+        pluginInstance.cleanup?.();
+        vi.useRealTimers();
+    });
+
+    it('cancels a pending replay when the session is deleted', async () => {
+        await pluginInstance.event({
+            event: {
+                type: 'message.updated',
+                properties: {
+                    info: {
+                        id: 'assistant-1',
+                        sessionID: 'session-1',
+                        providerID: 'anthropic',
+                        modelID: 'claude-sonnet-4',
+                        status: 'completed',
+                    },
+                },
+            },
+        });
+
+        const rateLimit = pluginInstance.event({
+            event: {
+                type: 'session.error',
+                properties: {
+                    sessionID: 'session-1',
+                    error: { name: 'APIError', data: { statusCode: 429 } },
+                },
+            },
+        });
+        // Deliver deletion immediately to cover the race before the cooldown
+        // timer has necessarily been registered.
+        await pluginInstance.event({
+            event: {
+                type: 'session.deleted',
+                properties: { info: { id: 'session-1' } },
+            },
+        });
+        await rateLimit;
+        await vi.advanceTimersByTimeAsync(60000);
+
+        expect(mockClient.session.promptAsync).not.toHaveBeenCalled();
+    });
+});

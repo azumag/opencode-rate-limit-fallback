@@ -107,7 +107,7 @@ export class ConfigValidator {
         }
 
         // Warning if fallbackModels is empty
-        if (config.fallbackModels.length === 0) {
+        if (config.fallbackModels.length === 0 && config.fallbackMode !== 'wait') {
           warnings.push({
             path: 'fallbackModels',
             message: 'fallbackModels is empty - no fallback models available',
@@ -173,10 +173,11 @@ export class ConfigValidator {
     }
 
     // Validate fallbackMode
-    if (config.fallbackMode && config.fallbackMode !== 'cycle' && config.fallbackMode !== 'stop' && config.fallbackMode !== 'retry-last') {
+    const validFallbackModes = ['cycle', 'stop', 'retry-last', 'wait'];
+    if (config.fallbackMode && !validFallbackModes.includes(config.fallbackMode)) {
       errors.push({
         path: 'fallbackMode',
-        message: 'fallbackMode must be one of: cycle, stop, retry-last',
+        message: `fallbackMode must be one of: ${validFallbackModes.join(', ')}`,
         severity: 'error',
         value: config.fallbackMode,
       });
