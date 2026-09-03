@@ -76,4 +76,12 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
       
-      - run: npm publish --access public --ignore-scripts
+      - name: Publish package
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          MAJOR=${VERSION%%.*}
+          if [ "$MAJOR" -ge 2 ]; then
+            npm publish --access public --ignore-scripts --tag v2
+          else
+            npm publish --access public --ignore-scripts
+          fi
