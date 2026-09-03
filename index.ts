@@ -147,6 +147,17 @@ function isSessionCreatedEvent(event: { type: string; properties?: unknown }): e
   return false;
 }
 
+/** Check whether a deleted-session event contains a usable session ID. */
+function getDeletedSessionID(event: { type: string; properties?: unknown }): string | null {
+  if (event.type !== "session.deleted" || typeof event.properties !== "object" || event.properties === null) {
+    return null;
+  }
+
+  const properties = event.properties as { sessionID?: unknown; info?: { id?: unknown } };
+  if (typeof properties.sessionID === "string") return properties.sessionID;
+  return typeof properties.info?.id === "string" ? properties.info.id : null;
+}
+
 // ============================================================================
 // Main Plugin Export
 // ============================================================================
@@ -479,6 +490,11 @@ export const RateLimitFallback: Plugin = async ({ client, directory, worktree })
 
       // OpenCode represents subagents as regular child sessions.
       const rawEvent = event as { type: string; properties?: unknown };
+      const deletedSessionID = getDeletedSessionID(rawEvent);
+      if (deletedSessionID) {
+        fallbackHandler.cancelQuotaWait(deletedSessionID);
+      }
+
       if (isSessionCreatedEvent(rawEvent)) {
         const { id, parentID } = rawEvent.properties.info;
         if (parentID && !subagentTracker.registerSubagent(id, parentID)) {

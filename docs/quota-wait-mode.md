@@ -60,7 +60,7 @@ quota wait is explicitly intended to survive long quota-reset windows.
 - OpenCode headless mode (`opencode run`) is supported. An explicit
   `headlessOnRateLimit: "abort"` still takes precedence and aborts instead of
   waiting.
-- Stop the OpenCode session/process to stop waiting.
+- Deleting the OpenCode session or stopping the process cancels a pending wait.
 
 This mode is intentionally independent from a future multi-model behavior such
 as `A -> B -> wait -> A -> B`.

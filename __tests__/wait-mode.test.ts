@@ -117,7 +117,7 @@ describe('single-model quota wait mode', () => {
       'claude-sonnet-4',
     );
 
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
     expect(client.session.abort).toHaveBeenCalledTimes(1);
     expect(client.session.promptAsync).not.toHaveBeenCalled();
 
@@ -145,13 +145,6 @@ describe('single-model quota wait mode', () => {
     await vi.advanceTimersByTimeAsync(1500);
     await first;
 
-    vi.mocked(client.session.messages).mockResolvedValue({
-      data: [{
-        info: { id: 'user-2', role: 'user', agent: 'build' },
-        parts: [{ type: 'text', text: 'Continue the task' }],
-      }],
-    });
-
     const second = handler.handleRateLimitFallback(
       'session-1',
       'anthropic',
@@ -165,5 +158,59 @@ describe('single-model quota wait mode', () => {
       request.body.model.providerID === 'anthropic' &&
       request.body.model.modelID === 'claude-sonnet-4'
     )).toBe(true);
+  });
+
+  it('does not replay after the handler is destroyed during cooldown', async () => {
+    const promise = handler.handleRateLimitFallback(
+      'session-1',
+      'anthropic',
+      'claude-sonnet-4',
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    handler.destroy();
+    await promise;
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(client.session.promptAsync).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a deleted session after cooldown', async () => {
+    const promise = handler.handleRateLimitFallback(
+      'session-1',
+      'anthropic',
+      'claude-sonnet-4',
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    handler.cancelQuotaWait('session-1');
+    await promise;
+    await vi.advanceTimersByTimeAsync(60000);
+
+    expect(client.session.promptAsync).not.toHaveBeenCalled();
+  });
+
+  it('cancels on mode change and can wait again after wait mode is restored', async () => {
+    const first = handler.handleRateLimitFallback(
+      'session-1',
+      'anthropic',
+      'claude-sonnet-4',
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    handler.updateConfig({ ...config, fallbackMode: 'cycle' });
+    await first;
+    expect(client.session.promptAsync).not.toHaveBeenCalled();
+
+    handler.updateConfig(config);
+    const second = handler.handleRateLimitFallback(
+      'session-1',
+      'anthropic',
+      'claude-sonnet-4',
+    );
+    await vi.advanceTimersByTimeAsync(1500);
+    await second;
+
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
   });
 });

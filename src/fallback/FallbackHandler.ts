@@ -29,6 +29,12 @@ export class FallbackHandler {
   private fallbackInProgress: Map<string, number>;
   private fallbackMessages: Map<string, { sessionID: string; messageID: string; timestamp: number }>;
   private sessionLock: Set<string>;
+  private pendingQuotaWaits: Map<string, {
+    timer: ReturnType<typeof setTimeout>;
+    resolve: (completed: boolean) => void;
+  }>;
+  private deletedQuotaSessions: Set<string>;
+  private destroyed: boolean;
 
   // Metrics manager reference
   private metricsManager: MetricsManager;
@@ -82,9 +88,56 @@ export class FallbackHandler {
     this.fallbackInProgress = new Map();
     this.fallbackMessages = new Map();
     this.sessionLock = new Set();
+    this.pendingQuotaWaits = new Map();
+    this.deletedQuotaSessions = new Set();
+    this.destroyed = false;
 
     // Initialize retry manager
     this.retryManager = new RetryManager(config.retryPolicy || {}, logger);
+  }
+
+  /**
+   * Wait for a quota cooldown while allowing plugin cleanup, session deletion,
+   * or a disabling config reload to cancel the pending replay.
+   */
+  private waitForQuotaCooldown(sessionID: string, delayMs: number): Promise<boolean> {
+    if (this.destroyed || this.deletedQuotaSessions.has(sessionID) || !this.config.enabled || this.config.fallbackMode !== "wait") {
+      return Promise.resolve(false);
+    }
+
+    return new Promise(resolve => {
+      const pending = {
+        timer: undefined as unknown as ReturnType<typeof setTimeout>,
+        resolve,
+      };
+      pending.timer = setTimeout(() => {
+        this.pendingQuotaWaits.delete(sessionID);
+        resolve(true);
+      }, delayMs);
+      this.pendingQuotaWaits.set(sessionID, pending);
+    });
+  }
+
+  /** Cancel a pending quota wait for one session. */
+  cancelQuotaWait(sessionID: string): void {
+    this.deletedQuotaSessions.add(sessionID);
+    this.cancelPendingQuotaWait(sessionID);
+  }
+
+  private cancelPendingQuotaWait(sessionID: string): void {
+    const pending = this.pendingQuotaWaits.get(sessionID);
+    if (!pending) return;
+
+    clearTimeout(pending.timer);
+    this.pendingQuotaWaits.delete(sessionID);
+    pending.resolve(false);
+    this.logger.info("Cancelled pending quota wait", { sessionID });
+  }
+
+  private cancelAllQuotaWaits(): void {
+    for (const sessionID of [...this.pendingQuotaWaits.keys()]) {
+      this.cancelPendingQuotaWait(sessionID);
+    }
   }
 
   /**
@@ -356,7 +409,11 @@ export class FallbackHandler {
           modelID: currentModelID,
           waitMs,
         });
-        await new Promise(resolve => setTimeout(resolve, waitMs));
+        const waitCompleted = await this.waitForQuotaCooldown(targetSessionID, waitMs);
+        if (!waitCompleted || this.destroyed || !this.config.enabled || this.config.fallbackMode !== "wait") {
+          this.fallbackInProgress.delete(fallbackKey);
+          return;
+        }
 
         if (this.metricsManager) {
           this.metricsManager.recordFallbackStart();
@@ -385,6 +442,10 @@ export class FallbackHandler {
           hierarchy,
           lastUserMessage.info.agent,
         );
+
+        // A subsequent rate-limit event from the replay is a new wait cycle,
+        // even when OpenCode retains the original user-message ID.
+        this.fallbackInProgress.delete(fallbackKey);
         return;
       }
 
@@ -637,12 +698,15 @@ export class FallbackHandler {
    * Clean up all resources
    */
   destroy(): void {
+    this.destroyed = true;
+    this.cancelAllQuotaWaits();
     this.currentSessionModel.clear();
     this.modelRequestStartTimes.clear();
     this.retryState.clear();
     this.fallbackInProgress.clear();
     this.fallbackMessages.clear();
     this.sessionLock.clear();
+    this.deletedQuotaSessions.clear();
     this.retryManager.destroy();
 
     // Destroy circuit breaker
@@ -656,6 +720,9 @@ export class FallbackHandler {
    */
   updateConfig(newConfig: PluginConfig): void {
     this.config = newConfig;
+    if (!newConfig.enabled || newConfig.fallbackMode !== "wait") {
+      this.cancelAllQuotaWaits();
+    }
     this.subagentTracker.updateConfig(newConfig);
 
     // Update model selector
