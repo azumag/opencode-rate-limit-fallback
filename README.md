@@ -30,13 +30,27 @@ OpenCode plugin that automatically switches to fallback models when rate limited
 
 ## Installation
 
-Add the plugin to your `opencode.json`:
+OpenCode v2 / Web uses the `plugins` key:
 
 ```json
 {
-  "plugin": ["@azumag/opencode-rate-limit-fallback"]
+  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.0"]
 }
 ```
+
+OpenCode v1 must stay on the latest 1.x release:
+
+```json
+{
+  "plugin": ["@azumag/opencode-rate-limit-fallback@1.70.11"]
+}
+```
+
+Version 2 is published under the `v2` npm tag so unpinned OpenCode v1
+installations do not receive the incompatible v2 entry point.
+
+The v2 entry point currently implements `fallbackMode: "wait"`. Model-switching
+modes remain available in the v1-compatible 1.x line.
 
 OpenCode will automatically install the plugin on startup.
 

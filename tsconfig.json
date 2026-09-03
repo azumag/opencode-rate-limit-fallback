@@ -22,6 +22,7 @@
   },
   "include": [
     "index.ts",
+    "v2.ts",
     "logger.ts",
     "src/**/*.ts"
   ],
