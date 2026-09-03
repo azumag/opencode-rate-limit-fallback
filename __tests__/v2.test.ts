@@ -18,7 +18,7 @@ describe("OpenCode v2 plugin", () => {
     expect(plugin.setup).toBeTypeOf("function");
   });
 
-  it("overrides rate-limit retries with the configured cooldown", async () => {
+  it("uses the configured cooldown as the base of exponential backoff", async () => {
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
       enabled: true,
@@ -27,13 +27,14 @@ describe("OpenCode v2 plugin", () => {
       fallbackModels: [],
     }));
     let retryHook: ((event: any) => void) | undefined;
-    const dispose = vi.fn();
+    const promptDispose = vi.fn();
+    const retryDispose = vi.fn();
     const cleanup = await plugin.setup({
       location: { directory: "/test" },
       session: {
-        hook: vi.fn(async (_name, callback) => {
-          retryHook = callback;
-          return { dispose };
+        hook: vi.fn(async (name, callback) => {
+          if (name === "retry") retryHook = callback;
+          return { dispose: name === "retry" ? retryDispose : promptDispose };
         }),
         prompt: vi.fn(),
       },
@@ -48,8 +49,70 @@ describe("OpenCode v2 plugin", () => {
     retryHook?.(event);
     expect(event.decision).toEqual({ retry: true, delay: 60000 });
 
+    const secondEvent = { ...event, attempt: 2, decision: { retry: false } };
+    retryHook?.(secondEvent);
+    expect(secondEvent.decision).toEqual({ retry: true, delay: 120000 });
+
     await cleanup?.();
-    expect(dispose).toHaveBeenCalledOnce();
+    expect(promptDispose).toHaveBeenCalledOnce();
+    expect(retryDispose).toHaveBeenCalledOnce();
+  });
+
+  it("caps backoff at one hour and resets it for a new user prompt", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true,
+      fallbackMode: "wait",
+      cooldownMs: 60000,
+      fallbackModels: [],
+    }));
+    let promptHook: ((event: any) => void) | undefined;
+    let retryHook: ((event: any) => void) | undefined;
+    const cleanup = await plugin.setup({
+      location: { directory: "/test" },
+      session: {
+        hook: vi.fn(async (name, callback) => {
+          if (name === "prompt") promptHook = callback;
+          if (name === "retry") retryHook = callback;
+          return { dispose: vi.fn() };
+        }),
+        prompt: vi.fn(),
+      },
+    });
+
+    let event: any;
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+      event = {
+        sessionID: "session-1",
+        attempt,
+        error: { status: 429, message: "Rate limit exceeded" },
+        decision: { retry: false },
+      };
+      retryHook?.(event);
+    }
+    expect(event.decision).toEqual({ retry: true, delay: 3600000 });
+
+    promptHook?.({ sessionID: "session-1", prompt: { text: "" } });
+    event = {
+      sessionID: "session-1",
+      attempt: 1,
+      error: { status: 429, message: "Rate limit exceeded" },
+      decision: { retry: false },
+    };
+    retryHook?.(event);
+    expect(event.decision).toEqual({ retry: true, delay: 3600000 });
+
+    promptHook?.({ sessionID: "session-1", prompt: { text: "new request" } });
+    event = {
+      sessionID: "session-1",
+      attempt: 1,
+      error: { status: 429, message: "Rate limit exceeded" },
+      decision: { retry: false },
+    };
+    retryHook?.(event);
+    expect(event.decision).toEqual({ retry: true, delay: 60000 });
+
+    await cleanup?.();
   });
 
   it("resumes a terminal rate-limit failure after cooldown", async () => {
@@ -66,8 +129,8 @@ describe("OpenCode v2 plugin", () => {
     const cleanup = await plugin.setup({
       location: { directory: "/test" },
       session: {
-        hook: vi.fn(async (_name, callback) => {
-          retryHook = callback;
+        hook: vi.fn(async (name, callback) => {
+          if (name === "retry") retryHook = callback;
           return { dispose: vi.fn() };
         }),
         prompt,
