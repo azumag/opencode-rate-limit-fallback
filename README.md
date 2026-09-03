@@ -34,7 +34,7 @@ OpenCode v2 / Web uses the `plugins` key:
 
 ```json
 {
-  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.0"]
+  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.1"]
 }
 ```
 
@@ -46,7 +46,7 @@ OpenCode v1 must stay on the latest 1.x release:
 }
 ```
 
-Version 2 is published under the `v2` npm tag so unpinned OpenCode v1
+Version 2 is published under the `opencode-v2` npm tag so unpinned OpenCode v1
 installations do not receive the incompatible v2 entry point.
 
 The v2 entry point currently implements `fallbackMode: "wait"`. Model-switching
