@@ -23,11 +23,30 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Resolve only the fixed Vitest patch without running package scripts
+      - name: Resolve fixed patch metadata, preserve unrelated pins, validate with npm ci
         run: |
           cp package.json "$RUNNER_TEMP/original-package.json"
           cp package-lock.json "$RUNNER_TEMP/original-lock.json"
           npm install --package-lock-only --ignore-scripts --save-exact --save-dev vitest@4.1.11 @vitest/coverage-v8@4.1.11
+          python3 - <<'PY'
+          import copy, json, os, pathlib
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          package = json.loads((temp / 'original-package.json').read_text())
+          old = json.loads((temp / 'original-lock.json').read_text())
+          resolved = json.loads(pathlib.Path('package-lock.json').read_text())
+          for name in ('vitest', '@vitest/coverage-v8'):
+              assert package['devDependencies'][name] == '^4.1.10'
+              package['devDependencies'][name] = '4.1.11'
+              old['packages']['']['devDependencies'][name] = '4.1.11'
+          for path, item in resolved['packages'].items():
+              if path == 'node_modules/vitest' or path.startswith('node_modules/@vitest/'):
+                  assert item['version'] == '4.1.11'
+                  old['packages'][path] = item
+          pathlib.Path('package.json').write_text(json.dumps(package, indent=2) + '\n')
+          pathlib.Path('package-lock.json').write_text(json.dumps(old, indent=2) + '\n')
+          PY
+          # npm ci must validate this frozen selective lock, not resolve around it.
+          npm ci --ignore-scripts
           npm audit --json > "$RUNNER_TEMP/fixed-audit.json"
       - name: Verify change boundaries and create blobs only; no commits or refs
         env:
@@ -40,13 +59,8 @@ jobs:
           current = json.loads(pathlib.Path('package.json').read_text())
           expected = copy.deepcopy(original)
           for name in ('vitest', '@vitest/coverage-v8'):
-              assert original['devDependencies'][name] == '^4.1.10'
               expected['devDependencies'][name] = '4.1.11'
-          # npm omits an empty dependency map; restore it, not other metadata.
-          if 'dependencies' not in current and original.get('dependencies') == {}:
-              current['dependencies'] = {}
-          assert current == expected, 'Unexpected changed package fields: ' + ', '.join(k for k in set(current) | set(expected) if current.get(k) != expected.get(k))
-          pathlib.Path('package.json').write_text(json.dumps(expected, indent=2) + '\n')
+          assert current == expected, 'Only the two Vitest pins may change'
           old_lock = json.loads((temp / 'original-lock.json').read_text())
           new_lock = json.loads(pathlib.Path('package-lock.json').read_text())
           assert {k: v for k, v in old_lock.items() if k != 'packages'} == {k: v for k, v in new_lock.items() if k != 'packages'}
@@ -59,7 +73,7 @@ jobs:
               assert after['node_modules/' + name]['version'] == '4.1.11'
           audit = json.loads((temp / 'fixed-audit.json').read_text())
           assert audit['metadata']['vulnerabilities']['total'] == 0 and 'error' not in audit
-          print('Full npm audit: zero vulnerabilities')
+          print('Frozen npm ci and full audit passed: zero vulnerabilities')
           root = 'https://api.github.com/repos/azumag/opencode-rate-limit-fallback/git/blobs'
           for name in ('package.json', 'package-lock.json'):
               payload = json.dumps({'content': pathlib.Path(name).read_text(), 'encoding': 'utf-8'}).encode()
