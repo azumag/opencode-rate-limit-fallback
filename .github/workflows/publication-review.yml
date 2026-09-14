@@ -1,0 +1,140 @@
+name: Publication review
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/publication-review-20260914]
+    paths: [.github/workflows/publication-review.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch public pull-request heads for history review
+        run: git fetch --no-tags origin '+refs/pull/*/head:refs/audit/pull/*'
+
+      - name: Install checksum-pinned Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 2 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin" "$RUNNER_TEMP/publication-snapshot"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/publication-snapshot"
+
+      - name: Scan reachable history and current tracked files without printing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks-default.toml"
+          touch "$RUNNER_TEMP/empty-gitleaksignore"
+          set +e
+          gitleaks git . --log-opts=--all --redact=100 --no-banner --no-color \
+            --config "$RUNNER_TEMP/gitleaks-default.toml" \
+            --gitleaks-ignore-path "$RUNNER_TEMP/empty-gitleaksignore" --ignore-gitleaks-allow \
+            --max-decode-depth=3 --max-archive-depth=2 --exit-code=10 \
+            --report-format=json --report-path="$RUNNER_TEMP/history-secrets.json" \
+            > "$RUNNER_TEMP/history-scanner.log" 2>&1
+          echo "$?" > "$RUNNER_TEMP/history-exit"
+          gitleaks dir "$RUNNER_TEMP/publication-snapshot" --redact=100 --no-banner --no-color \
+            --config "$RUNNER_TEMP/gitleaks-default.toml" \
+            --gitleaks-ignore-path "$RUNNER_TEMP/empty-gitleaksignore" --ignore-gitleaks-allow \
+            --max-decode-depth=3 --max-archive-depth=2 --exit-code=10 \
+            --report-format=json --report-path="$RUNNER_TEMP/current-secrets.json" \
+            > "$RUNNER_TEMP/current-scanner.log" 2>&1
+          echo "$?" > "$RUNNER_TEMP/current-exit"
+          exit 0
+
+      - name: Produce value-free secret and personal-data review summary
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import collections, hashlib, json, os, pathlib, re, subprocess
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          summary = {
+              'head': git('rev-parse', 'HEAD').decode().strip(),
+              'reachable_commits': int(git('rev-list', '--all', '--count')),
+              'refs': git('for-each-ref', '--format=%(refname)').decode().splitlines(),
+              'tracked_files': git('ls-files', '-z').decode().rstrip('\0').split('\0'),
+              'secret_scanner': 'gitleaks 8.30.1; built-in rules; no baseline or local allowlist',
+              'scope_exclusions': ['unreachable/deleted Git objects', 'issue and PR discussion bodies', 'Actions logs and unrelated artifacts', 'already-published npm tarballs', 'local untracked files', 'GitHub secret settings'],
+          }
+          scan_ok = True
+          for scope in ('history', 'current'):
+              status = int((temp / f'{scope}-exit').read_text())
+              report = temp / f'{scope}-secrets.json'
+              findings = json.loads(report.read_text()) if report.exists() else None
+              summary[scope + '_secrets'] = {
+                  'exit_code': status,
+                  'count': len(findings) if isinstance(findings, list) else None,
+                  'findings': [{k: f.get(k) for k in ('RuleID', 'File', 'StartLine', 'Commit')} for f in (findings or [])],
+              }
+              scan_ok = scan_ok and status == 0 and isinstance(findings, list) and not findings
+          patterns = {
+              'email': re.compile(r'[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'),
+              'personal_home_path': re.compile(r'/(?:Users|home)/[A-Za-z0-9_.-]+/'),
+              'private_ipv4': re.compile(r'(?<![\d.])(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})(?![\d.])'),
+              'japanese_mobile_number': re.compile(r'(?<!\d)0[789]0[- ]\d{4}[- ]\d{4}(?!\d)'),
+          }
+          def real_email(value):
+              domain = value.rsplit('@', 1)[-1].lower()
+              return not (domain == 'example.com' or domain.endswith('.example.com') or domain in ('example.org', 'example.net', 'test.com', 'test.org', 'localhost.localdomain', 'users.noreply.github.com', 'noreply.github.com') or value.lower() == 'noreply@github.com')
+          objects = {}
+          for line in git('rev-list', '--objects', '--all').decode().splitlines():
+              oid, _, path = line.partition(' ')
+              objects[oid] = path
+          types = git('cat-file', '--batch-check=%(objectname) %(objecttype)', '--batch-all-objects').decode().splitlines()
+          blobs = [(line.split()[0], objects[line.split()[0]]) for line in types if line.split()[1] == 'blob' and line.split()[0] in objects]
+          current_blobs = set()
+          for line in git('ls-tree', '-r', 'HEAD').decode().splitlines():
+              current_blobs.add(line.split()[2])
+          findings = []
+          for oid, path in blobs:
+              data = git('cat-file', 'blob', oid).decode('utf-8', errors='replace')
+              for rule, regex in patterns.items():
+                  matches = [m for m in regex.finditer(data) if rule != 'email' or real_email(m.group())]
+                  if matches:
+                      findings.append({'rule': rule, 'path': path, 'blob': oid, 'current': oid in current_blobs, 'lines': sorted(set(data.count('\n', 0, m.start()) + 1 for m in matches))})
+          summary['reachable_blobs_scanned_for_personal_data'] = len(blobs)
+          summary['personal_data_candidates'] = findings
+          author_emails = {}
+          for row in git('log', '--all', '--format=%H%x09%ae%x09%ce').decode().splitlines():
+              commit, author, committer = row.split('\t')
+              for email in (author, committer):
+                  if real_email(email):
+                      author_emails.setdefault(hashlib.sha256(email.encode()).hexdigest()[:12], commit)
+          summary['non_noreply_commit_email_candidates'] = [{'email_fingerprint': key, 'example_commit': value} for key, value in author_emails.items()]
+          summary['automated_secret_checks_passed'] = scan_ok
+          (temp / 'publication-review-summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False) + '\n')
+          print(json.dumps(summary, indent=2, ensure_ascii=False))
+          if not scan_ok:
+              raise SystemExit('Secret checks did not pass. No source snapshot will be uploaded; inspect the listed locations privately.')
+          PY
+
+      - name: Archive only the scanned current source, never Git history or credentials
+        run: tar -czf "$RUNNER_TEMP/publication-source.tar.gz" -C "$RUNNER_TEMP/publication-snapshot" .
+
+      - name: Upload sanitized summary and scanned source for review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-review
+          path: |
+            ${{ runner.temp }}/publication-review-summary.json
+            ${{ runner.temp }}/publication-source.tar.gz
+          retention-days: 3
+          if-no-files-found: error
