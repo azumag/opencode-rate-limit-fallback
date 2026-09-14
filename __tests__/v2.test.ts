@@ -149,4 +149,100 @@ describe("OpenCode v2 plugin", () => {
 
     await cleanup?.();
   });
+
+  it.each(['"invalid"', '"60000"', 'null', 'true', '[]', '{}', '-1', '1e309', '2147483398'])
+  ("rejects unsafe cooldown %s before registering hooks", async (rawCooldown) => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(
+      `{"enabled":true,"fallbackMode":"wait","cooldownMs":${rawCooldown}}`,
+    );
+    const hook = vi.fn();
+    const prompt = vi.fn();
+    await expect(plugin.setup({
+      location: { directory: "/test" },
+      session: { hook, prompt },
+    })).rejects.toThrow("cooldownMs must be a finite non-negative number");
+    expect(hook).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [0, 1000],
+    [1000, 1000],
+    [7200000, 7200000],
+    [2147483397, 2147483397],
+  ])("keeps cooldown %s safe through the terminal resume timer", async (input, expected) => {
+    vi.useFakeTimers();
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true, fallbackMode: "wait", cooldownMs: input,
+    }));
+    let retryHook: ((event: any) => void) | undefined;
+    const prompt = vi.fn().mockResolvedValue(undefined);
+    const cleanup = await plugin.setup({
+      location: { directory: "/test" },
+      session: {
+        hook: vi.fn(async (name, callback) => {
+          if (name === "retry") retryHook = callback;
+          return { dispose: vi.fn() };
+        }),
+        prompt,
+      },
+    });
+    const event = {
+      sessionID: "session-1", attempt: 5,
+      error: { status: 429, message: "Rate limit exceeded" },
+      decision: { retry: false },
+    };
+    retryHook?.(event);
+    expect(event.decision).toEqual({ retry: true, delay: expected });
+    await vi.advanceTimersByTimeAsync(expected + 249);
+    expect(prompt).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(prompt).toHaveBeenCalledOnce();
+    await cleanup?.();
+  });
+
+  it.each([401, 403])("stops HTTP %s even when the message mentions quota", async (status) => {
+    vi.useFakeTimers();
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true, fallbackMode: "wait", cooldownMs: 1000,
+    }));
+    let retryHook: ((event: any) => void) | undefined;
+    const prompt = vi.fn().mockResolvedValue(undefined);
+    const cleanup = await plugin.setup({
+      location: { directory: "/test" },
+      session: {
+        hook: vi.fn(async (name, callback) => {
+          if (name === "retry") retryHook = callback;
+          return { dispose: vi.fn() };
+        }),
+        prompt,
+      },
+    });
+    retryHook?.({
+      sessionID: "session-1", attempt: 5,
+      error: { status: 429, message: "quota exceeded" }, decision: { retry: false },
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    const denied = {
+      sessionID: "session-1", attempt: 6,
+      error: { status, message: "Account disabled: quota access revoked" },
+      decision: { retry: true, delay: 1000 },
+    };
+    retryHook?.(denied);
+    expect(denied.decision).toEqual({ retry: false });
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(prompt).not.toHaveBeenCalled();
+    const next = {
+      sessionID: "session-1", attempt: 1,
+      error: { status: 429 }, decision: { retry: false },
+    };
+    retryHook?.(next);
+    expect(next.decision).toEqual({ retry: true, delay: 1000 });
+    await cleanup?.();
+  });
+
 });

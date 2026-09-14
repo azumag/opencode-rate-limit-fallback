@@ -5,3 +5,23 @@ bun.lock
 dist/
 tmp/*
 coverage/
+*.tsbuildinfo
+
+# Local credentials and machine-specific configuration.
+.env
+.env.*
+!.env.example
+!.env.sample
+.npmrc
+auth.json
+*.pem
+*.key
+.opencode/auth.json
+rate-limit-fallback.json
+rate-limit-fallback-health.json
+.opencode/rate-limit-fallback.json
+.opencode/rate-limit-fallback-health.json
+
+# Generated diagnostic data can contain local paths or session metadata.
+test-results*.json
+publication-review-summary.json

@@ -1,7 +1,7 @@
 {
   "name": "@azumag/opencode-rate-limit-fallback",
-  "version": "2.0.2",
-  "description": "OpenCode plugin that automatically switches to fallback models when rate limited",
+  "version": "2.0.3",
+  "description": "OpenCode plugin for same-model quota waiting and legacy model fallback",
   "main": "dist/v2.js",
   "types": "dist/v2.d.ts",
   "exports": {
@@ -41,6 +41,9 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "README.md",
+    "README.ja.md",
+    "docs/v1-reference.md",
+    "docs/quota-wait-mode.md",
     "LICENSE"
   ],
   "devDependencies": {

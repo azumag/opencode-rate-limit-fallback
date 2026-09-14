@@ -40,6 +40,9 @@ type V2Context = {
 };
 
 const MAX_BACKOFF_MS = 60 * 60 * 1000;
+const RESUME_PADDING_MS = 250;
+// Keep the resumed timeout within the signed 32-bit timer limit.
+const MAX_COOLDOWN_MS = 2 ** 31 - 1 - RESUME_PADDING_MS;
 
 const RATE_LIMIT_PATTERNS = [
   /\b429\b/i,
@@ -59,8 +62,17 @@ function isRateLimit(value: unknown): boolean {
   return RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function effectiveCooldown(cooldownMs: number | undefined): number {
-  return Math.max(1000, cooldownMs ?? 60000);
+function effectiveCooldown(cooldownMs: unknown): number {
+  const value = cooldownMs === undefined ? 60000 : cooldownMs;
+  // JSON configuration is untrusted at runtime, regardless of its TS type.
+  // NaN and overflowing timeouts can otherwise become near-immediate retries.
+  if (typeof value !== "number" || !Number.isFinite(value) ||
+      value < 0 || value > MAX_COOLDOWN_MS) {
+    throw new RangeError(
+      `cooldownMs must be a finite non-negative number no greater than ${MAX_COOLDOWN_MS}.`,
+    );
+  }
+  return Math.max(1000, value);
 }
 
 function exponentialDelay(baseDelayMs: number, failureCount: number): number {
@@ -95,7 +107,7 @@ export default {
         void context.session.prompt({ sessionID, text: "", resume: true }).catch(() => {
           // A deleted or otherwise unavailable session must not keep retrying.
         });
-      }, delay + 250);
+      }, delay + RESUME_PADDING_MS);
       resumeTimers.set(sessionID, timer);
     };
 
@@ -106,6 +118,13 @@ export default {
     });
 
     const retryRegistration = await context.session.hook("retry", (event) => {
+      // A permission failure is not a quota reset. Also cancel a resume that
+      // may already have been scheduled by an earlier rate-limit event.
+      if (event.error?.status === 401 || event.error?.status === 403) {
+        clearSessionState(event.sessionID);
+        event.decision = { retry: false };
+        return;
+      }
       if (!isRateLimit(event.error)) return;
       const previous = resumeTimers.get(event.sessionID);
       if (previous) {

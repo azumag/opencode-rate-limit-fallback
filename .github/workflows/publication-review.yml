@@ -2,9 +2,8 @@ name: Publication review
 
 on:
   workflow_dispatch:
-  push:
-    branches: [codex/publication-review-20260914]
-    paths: [.github/workflows/publication-review.yml]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -16,6 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -62,7 +62,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import collections, hashlib, json, os, pathlib, re, subprocess
+          import hashlib, json, os, pathlib, re, subprocess
           temp = pathlib.Path(os.environ['RUNNER_TEMP'])
           def git(*args):
               return subprocess.check_output(['git', *args])
@@ -93,7 +93,7 @@ jobs:
           }
           def real_email(value):
               domain = value.rsplit('@', 1)[-1].lower()
-              return not (domain == 'example.com' or domain.endswith('.example.com') or domain in ('example.org', 'example.net', 'test.com', 'test.org', 'localhost.localdomain', 'users.noreply.github.com', 'noreply.github.com') or value.lower() == 'noreply@github.com')
+              return not (domain == 'example.com' or domain.endswith('.example.com') or domain in ('example.org', 'example.net', 'test.com', 'test.org', 'localhost.localdomain', 'users.noreply.github.com', 'noreply.github.com') or value.lower() in ('noreply@github.com', 'noreply@anthropic.com'))
           objects = {}
           for line in git('rev-list', '--objects', '--all').decode().splitlines():
               oid, _, path = line.partition(' ')
@@ -109,7 +109,10 @@ jobs:
               for rule, regex in patterns.items():
                   matches = [m for m in regex.finditer(data) if rule != 'email' or real_email(m.group())]
                   if matches:
-                      findings.append({'rule': rule, 'path': path, 'blob': oid, 'current': oid in current_blobs, 'lines': sorted(set(data.count('\n', 0, m.start()) + 1 for m in matches))})
+                      item = {'rule': rule, 'path': path, 'blob': oid, 'current': oid in current_blobs, 'lines': sorted(set(data.count('\n', 0, m.start()) + 1 for m in matches))}
+                      if rule == 'personal_home_path':
+                          item['path_categories'] = sorted(set('runner' if m.group().startswith('/home/' + 'runner/') else 'generic-test' if m.group() in ('/home/' + 'user/', '/Users/' + 'user/') else 'other-local-user' for m in matches))
+                      findings.append(item)
           summary['reachable_blobs_scanned_for_personal_data'] = len(blobs)
           summary['personal_data_candidates'] = findings
           author_emails = {}
@@ -119,12 +122,81 @@ jobs:
                   if real_email(email):
                       author_emails.setdefault(hashlib.sha256(email.encode()).hexdigest()[:12], commit)
           summary['non_noreply_commit_email_candidates'] = [{'email_fingerprint': key, 'example_commit': value} for key, value in author_emails.items()]
+          session_urls = []
+          for commit in git('rev-list', '--all').decode().splitlines():
+              message = git('show', '-s', '--format=%B', commit).decode()
+              if re.search(r'https://(?:claude\.ai/code/session_|chatgpt\.com/(?:c/|codex/)|chat\.openai\.com/c/)', message):
+                  session_urls.append(commit)
+          summary['commits_with_coding_session_url_candidates'] = session_urls
           summary['automated_secret_checks_passed'] = scan_ok
           (temp / 'publication-review-summary.json').write_text(json.dumps(summary, indent=2, ensure_ascii=False) + '\n')
           print(json.dumps(summary, indent=2, ensure_ascii=False))
           if not scan_ok:
               raise SystemExit('Secret checks did not pass. No source snapshot will be uploaded; inspect the listed locations privately.')
           PY
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install locked development dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck, test, and build
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Verify package contents, documentation links, and dependency audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --ignore-scripts --json > "$RUNNER_TEMP/package-preview.json"
+          set +e
+          npm audit --json > "$RUNNER_TEMP/npm-audit.json" 2> "$RUNNER_TEMP/npm-audit.log"
+          echo "$?" > "$RUNNER_TEMP/npm-audit-exit"
+          npm audit --omit=dev --json > "$RUNNER_TEMP/npm-audit-production.json" 2> "$RUNNER_TEMP/npm-audit-production.log"
+          echo "$?" > "$RUNNER_TEMP/npm-audit-production-exit"
+          npm view @azumag/opencode-rate-limit-fallback dist-tags --json > "$RUNNER_TEMP/npm-dist-tags.json" 2> "$RUNNER_TEMP/npm-dist-tags.log"
+          echo "$?" > "$RUNNER_TEMP/npm-dist-tags-exit"
+          set -e
+          python3 - <<'PYCODE'
+          import json, os, pathlib, re
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          preview = json.loads((temp / 'package-preview.json').read_text())[0]
+          paths = [f['path'] for f in preview['files']]
+          required = {'README.md', 'README.ja.md', 'docs/v1-reference.md', 'docs/quota-wait-mode.md', 'LICENSE', 'package.json', 'dist/v2.js', 'dist/v2.d.ts'}
+          assert required.issubset(paths), 'Missing distribution files'
+          assert all(p.startswith('dist/') or p in required for p in paths), 'Unexpected distribution files'
+          assert not any(p.endswith(('.map', '.json', '.log', '.pem', '.key')) and p != 'package.json' for p in paths), 'Unexpected sensitive/generated package file'
+          doc_files = ['README.md', 'README.ja.md', 'docs/v1-reference.md', 'docs/quota-wait-mode.md']
+          for file in doc_files:
+              text = pathlib.Path(file).read_text()
+              for target in re.findall(r'\[[^\]]+\]\(([^)]+)\)', text):
+                  if '://' not in target and not target.startswith('#'):
+                      assert (pathlib.Path(file).parent / target.split('#')[0]).is_file(), f'Broken local documentation link in {file}'
+          # Both top-level languages must use exactly the same runnable snippets.
+          code_blocks = lambda file: re.findall(r'```(?:json|sh)\n(.*?)```', pathlib.Path(file).read_text(), flags=re.S)
+          assert code_blocks('README.md') == code_blocks('README.ja.md'), 'Language examples diverged'
+          audit = {}
+          audit_ok = True
+          for name in ('npm-audit', 'npm-audit-production'):
+              status = int((temp / (name + '-exit')).read_text())
+              raw = json.loads((temp / (name + '.json')).read_text())
+              counts = raw.get('metadata', {}).get('vulnerabilities')
+              audit[name] = {'exit_code': status, 'vulnerabilities': counts, 'has_error': 'error' in raw}
+              audit_ok = audit_ok and status == 0 and isinstance(counts, dict) and counts.get('total') == 0 and 'error' not in raw
+          tags = None
+          if int((temp / 'npm-dist-tags-exit').read_text()) == 0:
+              tags = json.loads((temp / 'npm-dist-tags.json').read_text())
+          result = {'package': preview['name'], 'version': preview['version'], 'file_count': len(paths), 'files': paths, 'documentation_links': 'passed', 'bilingual_examples': 'identical', 'dependency_audit': audit, 'published_dist_tags_at_review': tags}
+          (temp / 'publication-package-summary.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          if not audit_ok:
+              raise SystemExit('Dependency audit did not pass; inspect the value-free summary. No publish has occurred.')
+          PYCODE
 
       - name: Archive only the scanned current source, never Git history or credentials
         run: tar -czf "$RUNNER_TEMP/publication-source.tar.gz" -C "$RUNNER_TEMP/publication-snapshot" .
@@ -136,5 +208,6 @@ jobs:
           path: |
             ${{ runner.temp }}/publication-review-summary.json
             ${{ runner.temp }}/publication-source.tar.gz
+            ${{ runner.temp }}/publication-package-summary.json
           retention-days: 3
           if-no-files-found: error

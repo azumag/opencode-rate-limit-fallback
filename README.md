@@ -1,44 +1,108 @@
 # @azumag/opencode-rate-limit-fallback
 
-[![npm version](https://badge.fury.io/js/@azumag%2Fopencode-rate-limit-fallback.svg)](https://www.npmjs.com/package/@azumag/opencode-rate-limit-fallback)
+**English** | [日本語](README.ja.md)
 
-OpenCode plugin that automatically switches to fallback models when rate limited.
+An unofficial OpenCode plugin for recovering from rate limits. **The 2.x entry point waits and resumes the same session; it does not switch models.** Model switching belongs to the legacy 1.x plugin.
 
-## Features
+This is a recovery tool, not a way to remove provider quotas or obtain extra usage. It does not manage accounts or credentials, and is not affiliated with or endorsed by OpenCode.
 
-- Detects rate limit errors (429, `rate_limit_error`, "usage limit", "quota exceeded", "high concurrency", etc.)
-- Ignores known benign Anthropic billing notices so they do not trigger false-positive fallbacks
-- Automatically aborts the current request and retries with a fallback model
-- Preserves the active OpenCode agent (`build`, `plan`, or a custom agent) when retrying
-- Configurable fallback model list with priority order
-- Four fallback modes: `cycle`, `stop`, `retry-last`, and single-model `wait`
-- **Headless mode support** (`opencode run`): disable fallback, abort, or use single-model quota wait
-- Session model tracking for sequential fallback across multiple rate limits
-- Cooldown period to prevent immediate retry on rate-limited models
-- **Exponential backoff with configurable retry policies**
-  - Supports immediate, exponential, and linear backoff strategies
-  - Jitter to prevent thundering herd problem
-  - Configurable retry limits and timeouts
-  - Retry statistics tracking
- - Toast notifications for user feedback
-  - Subagent session support with fallback on the failed child session
-  - Configurable maximum subagent nesting depth
-  - **Circuit breaker pattern** to prevent cascading failures from consistently failing models
-  - **Metrics collection** to track rate limits, fallbacks, and model performance
-   - **Configuration hot reload** - Reload configuration changes without restarting OpenCode
-   - **Dynamic fallback model prioritization** - Automatically reorders models based on success rate, response time, and usage frequency
+## Choose the right version
 
-## Installation
+| OpenCode plugin interface | Package line | Supported behavior |
+| --- | --- | --- |
+| v2 / Web, using `plugins` | 2.x, npm tag `opencode-v2` | `wait` only: same-session resume with exponential backoff |
+| v1, using `plugin` | 1.x; documented pin `1.70.11` | Model fallback, `cycle`, `stop`, `retry-last`, and fixed-interval `wait` |
 
-OpenCode v2 / Web uses the `plugins` key:
+The source version in this branch is **2.0.3**. The npm tag may still point to an earlier release until publication. The cooldown validation and HTTP 401/403 safeguards described below were added in 2.0.3; they are not retroactive fixes for 2.0.2.
+
+```sh
+npm view @azumag/opencode-rate-limit-fallback dist-tags --json
+```
+
+Do not install the 2.x entry point in a v1 host. The development dependencies pin the OpenCode plugin and SDK packages to `1.18.16`; that is **not** a claim of end-to-end compatibility with every v2/Web release. The v2 adapter has mocked hook tests; confirm your host supports its `prompt` and `retry` hooks before relying on it unattended.
+
+## Quick start: v2 same-model waiting
+
+Add the plugin to your **OpenCode configuration**, using the v2 tag rather than the v1 `latest` tag. After verifying a release, pin its exact version for reproducible installations.
 
 ```json
 {
-  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.2"]
+  "plugins": ["@azumag/opencode-rate-limit-fallback@opencode-v2"]
 }
 ```
 
-OpenCode v1 must stay on the latest 1.x release:
+Create a **separate plugin configuration** at `~/.opencode/rate-limit-fallback.json`. Create the directory first if necessary.
+
+```json
+{
+  "enabled": true,
+  "fallbackMode": "wait",
+  "cooldownMs": 60000,
+  "fallbackModels": []
+}
+```
+
+Restart the OpenCode process hosting the plugin. Select and authenticate your model through OpenCode itself. **Do not put API keys, cookies, passwords, or provider authentication in this plugin's JSON.**
+
+`fallbackMode: "wait"` must be explicit: the shared default is `"cycle"`, which makes the v2 adapter inactive. An empty model list is valid for `wait` because there is no fallback-model selection.
+
+## v2 behavior and configuration
+
+The adapter recognizes HTTP 429 and several rate/quota-related error phrases. It requests a retry of the existing session; it does not select another provider or model.
+
+With the example above, repeated matching errors produce delays of **60 seconds, 120 seconds, 240 seconds, …, 1 hour**. A new non-empty user prompt cancels the adapter's pending resume and resets its backoff. An automatic empty resume preserves the backoff. Success alone is not a reset signal in this adapter.
+
+| Setting | Behavior |
+| --- | --- |
+| `enabled` | `true` by default; `false` disables setup on the next host restart |
+| `fallbackMode` | Must be `"wait"` for v2; other modes do not register hooks |
+| `cooldownMs` | Initial delay, default `60000` ms; effective minimum `1000` ms |
+| `fallbackModels` | Not used for model selection in v2; may be `[]` |
+
+Starting in 2.0.3, `cooldownMs` must be a finite, non-negative JSON number no greater than `2147483397`. Invalid values reject plugin setup before hooks are registered, rather than producing unsafe timers. Values above one hour are preserved: the backoff ceiling is `max(3600000, cooldownMs)`, not always one hour. Prefer the 60-second example unless the provider requires a longer interval.
+
+Starting in 2.0.3, explicit HTTP **401/403** errors stop this adapter's retries and cancel an already scheduled resume for that session, even if their messages mention quota. A provider error without those status fields still relies on text classification; false positives are possible.
+
+### Important limitations
+
+- There is intentionally **no total retry-count or elapsed-time limit** in `wait`. At the adapter's assumed client retry ceiling (attempt 5), it schedules an empty same-session resume after the delay plus 250 ms. This does not override a provider's server-side quota or guarantee eventual recovery.
+- The adapter does **not parse `Retry-After` or quota-reset timestamps**, and has no jitter. Do not use it where an enforced provider retry interval cannot be respected. Avoid many concurrent waiting sessions.
+- v1 options such as `retryPolicy`, circuit breakers, custom error patterns, metrics, dynamic model priorities, config hot reload, and `headlessOnRateLimit` are **not implemented by the v2 entry point**. Setting them does not provide a v2 safety limit.
+- There are no v2 stop/deletion lifecycle hooks here. Do not assume a UI Stop button, session deletion, or closing a browser tab clears a server-side resume timer. To reliably stop this plugin's pending work, **terminate the OpenCode host process**, set `enabled: false`, and restart it. A new prompt cancels the previous adapter timer but also starts new work.
+
+A delayed resume can continue an agent's permitted tool actions. Keep the host's tool permissions and approval requirements appropriate for work that might resume much later.
+
+## Configuration lookup
+
+The first readable, accepted configuration wins; files are not layered together. For the v2 entry point, the search order is:
+
+1. `<directory>/.opencode/rate-limit-fallback.json`, then `<directory>/rate-limit-fallback.json`.
+2. `$HOME/.opencode/rate-limit-fallback.json`, then `$HOME/rate-limit-fallback.json`.
+3. `$XDG_CONFIG_HOME/opencode/rate-limit-fallback.json`, then `$XDG_CONFIG_HOME/rate-limit-fallback.json`. When unset, `XDG_CONFIG_HOME` defaults to `$HOME/.config`.
+
+The v2 adapter passes the same location for project and worktree. The v1 entry point can search a distinct worktree before the project directory. Project-local settings override global settings: inspect them before opening an untrusted repository. Changes require a host restart in v2.
+
+## OpenCode Go, terms, costs, and privacy
+
+Checked against the [Go documentation](https://opencode.ai/docs/go/) and [Terms of Service](https://opencode.ai/legal/terms-of-service) on **2026-09-14**; terms can change.
+
+Go documents ordinary coding-agent use. The hosted-service terms also restrict account-based limit evasion, excessive load, and certain automated activity. **Neither this README nor a backoff implementation is permission for unrestricted unattended use.** Obtain clarification from the provider for an uncertain deployment; this project makes no legal-compliance guarantee. Its MIT license covers the plugin code, not access to hosted models.
+
+Use only authorized accounts and supported host requests. Do not rotate accounts or spoof client/session identity to evade limits. This plugin delegates requests to OpenCode rather than constructing alternative provider requests; the host remains responsible for its client and session headers.
+
+The Go **Use balance** option can consume Zen credits after subscription limits. Check billing settings before enabling automatic resume. Model-specific retention and training policies also differ; do not assume all Go models have identical privacy guarantees. In v1, fallback can resend conversation content and attachments to a **different provider**, with different costs and policies.
+
+## Data handling and safe reporting
+
+The v2 adapter itself does not read provider credentials, export conversation logs, or call an independent telemetry endpoint. It reads local plugin configuration and holds session IDs, retry counters, and timers in memory. Resumed work still goes through OpenCode and the configured model provider: **this is not offline processing or a promise about the host's logging**.
+
+Legacy v1 features can write model-health statistics locally, export optional metrics, persist learned error patterns to configuration, and send diagnostics to OpenCode's application log. Diagnostic metadata can include paths, session IDs, configuration values, and provider errors; it is not a comprehensive secret-redaction system.
+
+Before sharing an issue, review and redact logs, configuration, screenshots, test output, and commit metadata. Never upload `.env`, `auth.json`, token-bearing `.npmrc`, private keys, or real conversations. `.gitignore` helps prevent future accidental additions; it cannot remove already committed data from Git history, old PRs, published packages, or cached copies. A clean automated secret scan is useful evidence, not a guarantee that all personal information is absent.
+
+## Using OpenCode v1
+
+Keep the v1 package line:
 
 ```json
 {
@@ -46,844 +110,24 @@ OpenCode v1 must stay on the latest 1.x release:
 }
 ```
 
-Version 2 is published under the `opencode-v2` npm tag so unpinned OpenCode v1
-installations do not receive the incompatible v2 entry point.
+The same minimal `wait` configuration above works with the v1 implementation, but its waiting interval is fixed rather than exponentially increasing. See the [v1 reference](docs/v1-reference.md) and [v1 quota-wait behavior](docs/quota-wait-mode.md) before configuring model switching or headless execution.
 
-The v2 entry point currently implements `fallbackMode: "wait"`. Model-switching
-modes remain available in the v1-compatible 1.x line.
+## Development and verification
 
-In v2 wait mode, `cooldownMs` is the initial delay. Consecutive rate-limit
-failures use exponential backoff (`1x`, `2x`, `4x`, ...), capped at one hour.
-A new user prompt resets the delay to `cooldownMs`; automatic resume attempts
-preserve the existing backoff sequence.
+The repository CI uses Node.js 24. From a trusted checkout:
 
-OpenCode will automatically install the plugin on startup.
-
-This release is tested with OpenCode `1.18.16`. Older OpenCode releases may
-fail to install the matching plugin SDK dependencies; upgrade OpenCode before
-installing this plugin.
-
-## Configuration
-
-Create a configuration file at one of these locations:
-
-**Config file search order (highest to lowest priority):**
-1. `<worktree>/.opencode/rate-limit-fallback.json`
-2. `<worktree>/rate-limit-fallback.json`
-3. `<project>/.opencode/rate-limit-fallback.json`
-4. `<project>/rate-limit-fallback.json`
-5. `~/.opencode/rate-limit-fallback.json` (recommended for most users)
-6. `~/.config/opencode/rate-limit-fallback.json`
-
-> **Note**: Project-local and worktree configs (1-4) take precedence over global configs (5-6).
-
-### Example Configuration
-
-```json
-{
-  "enabled": true,
-  "cooldownMs": 60000,
-  "fallbackMode": "cycle",
-  "maxSubagentDepth": 10,
-  "enableSubagentFallback": true,
-  "fallbackModels": [
-    { "providerID": "anthropic", "modelID": "claude-3-5-sonnet-20250514" },
-    { "providerID": "google", "modelID": "gemini-2.5-pro" },
-    { "providerID": "google", "modelID": "gemini-2.5-flash" }
-  ],
-  "retryPolicy": {
-    "maxRetries": 3,
-    "strategy": "exponential",
-    "baseDelayMs": 1000,
-    "maxDelayMs": 30000,
-    "jitterEnabled": true,
-    "jitterFactor": 0.1,
-    "timeoutMs": 60000
-  },
-  "metrics": {
-    "enabled": true,
-    "output": {
-      "console": true,
-      "format": "pretty"
-    },
-    "resetInterval": "daily"
-  },
-  "circuitBreaker": {
-    "enabled": true,
-    "failureThreshold": 5,
-    "recoveryTimeoutMs": 60000,
-    "halfOpenMaxCalls": 1,
-    "successThreshold": 2
-  },
-  "configReload": {
-    "enabled": true,
-    "watchFile": true,
-    "debounceMs": 1000,
-    "notifyOnReload": true
-  }
-}
+```sh
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm pack --dry-run --ignore-scripts
 ```
 
-### Configuration Options
+Tests use mocks and synthetic inputs; they do not prove provider approval, live quota-reset behavior, or every host's lifecycle behavior. The publication-review workflow scans reachable Git history and tracked files with redacted Gitleaks results. Its summary lists exclusions; deleted/unreachable objects, external copies, and all hosted discussion/log surfaces are not covered by that scan.
 
-  | Option | Type | Default | Description |
-  |--------|------|---------|-------------|
-  | `enabled` | boolean | `true` | Enable/disable the plugin |
-  | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
-  | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
-  | `headlessOnRateLimit` | string | `undefined` | Headless mode behavior on rate limit (see below) |
-  | `fallbackModels` | array | See below | List of fallback models in priority order |
-  | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
-   | `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
-  | `retryPolicy` | object | See below | Retry policy configuration (see below) |
-  | `circuitBreaker` | object | See below | Circuit breaker configuration (see below) |
-  | `errorPatterns` | object | See below | Advanced rate-limit matching overrides and false-positive ignores |
-  | `configReload` | object | See below | Configuration hot reload settings (see below) |
-  | `dynamicPrioritization` | object | See below | Dynamic prioritization settings (see below) |
-
-### Error Pattern Overrides
-
-The plugin now applies a small ignore list before general substring matching so benign provider notices do not trigger a fallback by mistake.
-
-Built-in ignore patterns:
-
-- `not your plan limits`
-- `draw from your extra usage`
-
-Strong signals still win over the ignore list:
-
-- HTTP `429`
-- explicit `rate_limit_error`
-
-Use `errorPatterns.ignorePatterns` to add your own false-positive suppressions:
-
-```json
-{
-  "errorPatterns": {
-    "ignorePatterns": [
-      "not your plan limits",
-      "draw from your extra usage",
-      "internal billing notice"
-    ]
-  }
-}
-```
-
-The configured array replaces the built-in list. Include the built-in entries when extending it, as shown above. Set it to `[]` to disable ignore matching entirely. Entries must be non-empty strings (or `RegExp` values when configuring the plugin programmatically), and changes are applied by config hot reload.
-
-### Automatic Pattern Learning
-
-Pattern learning can recognize a new provider error format after it appears repeatedly. It observes HTTP `429` responses and errors containing explicit rate-limit signals such as quota, throttling, or structured rate-limit codes. Arbitrary server and application errors are not learned.
-
-```json
-{
-  "errorPatterns": {
-    "enableLearning": true,
-    "autoApproveThreshold": 0.8,
-    "maxLearnedPatterns": 20,
-    "minErrorFrequency": 3,
-    "learningWindowMs": 86400000
-  }
-}
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `errorPatterns.enableLearning` | boolean | `false` | Enable automatic pattern learning |
-| `errorPatterns.autoApproveThreshold` | number | `0.8` | Minimum confidence from `0` to `1` required to save a candidate |
-| `errorPatterns.maxLearnedPatterns` | integer | `20` | Maximum saved patterns; highest-confidence patterns are retained |
-| `errorPatterns.minErrorFrequency` | integer | `3` | Required observations inside the learning window |
-| `errorPatterns.learningWindowMs` | number | `86400000` | Observation window in milliseconds |
-
-The provider from OpenCode's message event is used even when the error text does not name it. After a candidate reaches the frequency and confidence thresholds, the plugin atomically updates the config file and immediately refreshes the live registry; hot reload is not required. Only extracted phrases, status codes, and structured error codes are stored, not the complete raw error body.
-
-Learned entries with confidence at or below `0.7` remain visible for review but are not used for rate-limit detection. Lowering `autoApproveThreshold` below that value can persist candidates for inspection; it does not lower the runtime detection safety floor.
-
-Learned entries are validated during startup and hot reload. Strict configuration validation rejects malformed entries; non-strict mode excludes only the invalid entries.
-
-### Dynamic Prioritization
-
-The dynamic prioritization feature automatically reorders your fallback models based on their performance metrics, helping you use the most reliable and fastest models first.
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable/disable dynamic prioritization |
-| `updateInterval` | number | `10` | Number of requests between score updates (performance optimization) |
-| `successRateWeight` | number | `0.6` | Weight for success rate (0-1) |
-| `responseTimeWeight` | number | `0.3` | Weight for response time (0-1) |
-| `recentUsageWeight` | number | `0.1` | Weight for recent usage frequency (0-1) |
-| `minSamples` | number | `3` | Minimum samples before using dynamic ordering |
-| `maxHistorySize` | number | `100` | Maximum history size for usage tracking |
-
-#### How It Works
-
-Dynamic prioritization calculates a score for each model based on three factors:
-
-1. **Success Rate** (default weight: 0.6)
-   - Based on health score from HealthTracker
-   - Higher success rate = higher score
-
-2. **Response Time** (default weight: 0.3)
-   - Faster response times get higher scores
-   - Thresholds: <500ms (excellent), >5000ms (poor)
-
-3. **Recent Usage** (default weight: 0.1)
-   - Recently used models get a small boost
-   - Decays over 24 hours
-
-The final score is calculated as:
-```
-score = (healthScore / 100 * successRateWeight) +
-        (normalizedResponseTime * responseTimeWeight) +
-        (normalizedRecentUsage * recentUsageWeight)
-```
-
-#### Learning Phase
-
-- Uses static ordering until `minSamples` models have sufficient data
-- Default: 3 models need at least 3 requests each
-- Ensures reliable data before reordering
-
-#### Configuration Examples
-
-**Enable with defaults:**
-```json
-{
-  "dynamicPrioritization": {
-    "enabled": true
-  }
-}
-```
-
-**Full configuration:**
-```json
-{
-  "dynamicPrioritization": {
-    "enabled": true,
-    "updateInterval": 10,
-    "successRateWeight": 0.6,
-    "responseTimeWeight": 0.3,
-    "recentUsageWeight": 0.1,
-    "minSamples": 3,
-    "maxHistorySize": 100
-  }
-}
-```
-
-**Prioritize speed over reliability:**
-```json
-{
-  "dynamicPrioritization": {
-    "enabled": true,
-    "successRateWeight": 0.4,
-    "responseTimeWeight": 0.5,
-    "recentUsageWeight": 0.1
-  }
-}
-```
-
-#### Important Notes
-
-- **Disabled by default**: Set `enabled: true` to activate
-- **Requires health tracking**: Uses HealthTracker data for success rates
-- **Weights must sum to ~1.0**: Ensure optimal scoring behavior
-- **Hot reload supported**: Can be enabled/disabled without restarting OpenCode
-
-### Git Worktree Support
-
-When using git worktrees, the plugin searches for config files in the worktree directory first, before the project directory. This allows you to have different fallback configurations for different worktrees.
-
-**Example structure:**
-```
-my-repo/
-  .git/
-  .opencode/rate-limit-fallback.json  (project-level config)
-  my-worktree/  (worktree)
-    .opencode/rate-limit-fallback.json  (worktree-specific, higher priority)
-```
-
-**Config file search order with worktrees (highest to lowest priority):**
-1. `<worktree>/.opencode/rate-limit-fallback.json`
-2. `<worktree>/rate-limit-fallback.json`
-3. `<project>/.opencode/rate-limit-fallback.json`
-4. `<project>/rate-limit-fallback.json`
-5. `~/.opencode/rate-limit-fallback.json`
-6. `~/.config/opencode/rate-limit-fallback.json`
-
-> **Note**: If you're using git worktrees and want different configurations per worktree, create config files in the worktree directories (locations 1-2). Otherwise, a single project-level or global config is sufficient.
-
-### Headless Mode (`opencode run`)
-
-When running in headless mode (no TUI), model fallback is disabled by default because headless sessions should use their configured model only.
-
-`fallbackMode: "wait"` is the exception: it keeps the same model and runs the
-quota-wait loop in headless mode unless `headlessOnRateLimit` is `"abort"`.
-
-You can control what happens when a rate limit is detected in headless mode using the `headlessOnRateLimit` option:
-
-| Value | Description |
-|-------|-------------|
-| *(not set)* | Default behavior — do nothing, let the server's retry loop handle it |
-| `"ignore"` | Same as default — do nothing |
-| `"abort"` | Abort the session immediately to terminate the prompt |
-
-The `"abort"` option is useful when you want `opencode run` to fail fast on rate limits rather than waiting for the server's retry loop, which may retry indefinitely.
-
-```json
-{
-  "headlessOnRateLimit": "abort"
-}
-```
-
-### Fallback Modes
-
-| Mode | Description |
-|------|-------------|
-| `"cycle"` | Reset and retry from the first model when all models are exhausted (default) |
-| `"stop"` | Stop and show error when all models are exhausted |
-| `"retry-last"` | Try the last model once more, then reset to first on next prompt |
-| `"wait"` | Keep the current model, wait `cooldownMs`, and retry it indefinitely on rate limits |
-
-### Retry Policy
-
-The retry policy controls how the plugin handles retry attempts after rate limits, with support for exponential backoff to reduce API pressure.
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `maxRetries` | number | `3` | Maximum retry attempts before giving up |
-| `strategy` | string | `"immediate"` | Backoff strategy: `"immediate"`, `"exponential"`, or `"linear"` |
-| `baseDelayMs` | number | `1000` | Base delay in milliseconds for backoff calculation |
-| `maxDelayMs` | number | `30000` | Maximum delay in milliseconds |
-| `jitterEnabled` | boolean | `false` | Add random jitter to delays to prevent thundering herd |
-| `jitterFactor` | number | `0.1` | Jitter factor (0.1 = 10% variance) |
-| `timeoutMs` | number | `undefined` | Overall timeout for all retry attempts (optional) |
-
-#### Retry Strategies
-
-**Immediate** (default, no backoff)
-```
-delay = 0ms
-```
-Retries immediately without any delay. This is the original behavior and maintains backward compatibility.
-
-**Exponential** (recommended for production)
-```
-delay = min(baseDelayMs * (2 ^ attempt), maxDelayMs)
-delay = delay * (1 + random(-jitterFactor, jitterFactor))  // if jitter enabled
-```
-Exponential backoff that doubles the delay after each attempt. This is the standard pattern for rate limit handling.
-
-Example with `baseDelayMs: 1000`, `maxDelayMs: 30000`, and `jitterFactor: 0.1`:
-- Attempt 0: ~1000ms (with jitter: 900-1100ms)
-- Attempt 1: ~2000ms (with jitter: 1800-2200ms)
-- Attempt 2: ~4000ms (with jitter: 3600-4400ms)
-- Attempt 3: ~8000ms (with jitter: 7200-8800ms)
-- Attempt 4+: ~16000ms (capped at maxDelayMs: 30000ms)
-
-**Linear**
-```
-delay = min(baseDelayMs * (attempt + 1), maxDelayMs)
-delay = delay * (1 + random(-jitterFactor, jitterFactor))  // if jitter enabled
-```
-Linear backoff that increases delay by a constant amount after each attempt.
-
-Example with `baseDelayMs: 1000` and `maxDelayMs: 5000`:
-- Attempt 0: ~1000ms
-- Attempt 1: ~2000ms
-- Attempt 2: ~3000ms
-- Attempt 3: ~4000ms
-- Attempt 4+: ~5000ms (capped at maxDelayMs)
-
-#### Jitter
-
-Jitter adds random variation to delay times to prevent the "thundering herd" problem, where multiple clients retry simultaneously and overwhelm the API.
-
- - Recommended for production environments with multiple concurrent users
- - `jitterFactor: 0.1` adds ±10% variance to delay times
- - Example: With base delay of 1000ms and jitterFactor 0.1, actual delay will be 900-1100ms
-
-### Circuit Breaker
-
-The circuit breaker pattern prevents cascading failures by temporarily disabling models that are consistently failing (not due to rate limits).
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `circuitBreaker.enabled` | boolean | `false` | Enable/disable circuit breaker |
-| `circuitBreaker.failureThreshold` | number | `5` | Consecutive failures before opening circuit |
-| `circuitBreaker.recoveryTimeoutMs` | number | `60000` | Wait time before attempting recovery (ms) |
-| `circuitBreaker.halfOpenMaxCalls` | number | `1` | Max calls allowed in HALF_OPEN state |
-| `circuitBreaker.successThreshold` | number | `2` | Successes needed to close circuit |
-
-#### How It Works
-
-The circuit breaker maintains three states for each model:
-
-1. **CLOSED State**: Normal operation, requests pass through
-   - Failures are counted until the threshold is reached
-   - On threshold breach, transitions to OPEN state
-
-2. **OPEN State**: Model is failing, requests fail fast
-   - The circuit is "open" to prevent unnecessary API calls
-   - No requests are allowed through
-   - After the recovery timeout, transitions to HALF_OPEN state
-
-3. **HALF_OPEN State**: Testing if model recovered after timeout
-   - A limited number of test requests are allowed
-   - On success, transitions back to CLOSED state
-   - On failure, returns to OPEN state
-
-#### Important Notes
-
-- **Rate limit errors are NOT counted as failures**: The circuit breaker only tracks actual failures, not rate limit errors
-- **Disabled by default**: Set `circuitBreaker.enabled: true` to activate this feature
-- **Per-model tracking**: Each model has its own circuit state
-- **Toast notifications**: Users are notified when circuits open/close for awareness
-
-#### Configuration Recommendations
-
-| Environment | failureThreshold | recoveryTimeoutMs | halfOpenMaxCalls |
-|-------------|------------------|-------------------|------------------|
-| Development | 3 | 30000 | 1 |
-| Production | 5 | 60000 | 1 |
-| High Availability | 10 | 30000 | 2 |
-
-### Configuration Hot Reload
-
-The plugin supports automatic configuration reloading without requiring you to restart OpenCode. When you edit your configuration file, the plugin detects the changes and applies them seamlessly.
-
-#### Configuration Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `configReload.enabled` | boolean | `false` | Enable/disable configuration hot reload |
-| `configReload.watchFile` | boolean | `true` | Watch config file for changes |
-| `configReload.debounceMs` | number | `1000` | Debounce delay (ms) to handle multiple file writes |
-| `configReload.notifyOnReload` | boolean | `true` | Show toast notifications on reload |
-
-#### How It Works
-
-1. **File Watching**: When enabled, the plugin watches your configuration file for changes
-2. **Debouncing**: Multiple file writes (e.g., from editors) are debounced to prevent unnecessary reloads
-3. **Validation**: New configuration is validated before applying it
-4. **Graceful Application**: If valid, the new configuration is applied without interrupting active sessions
-5. **Toast Notifications**: You receive toast notifications for successful or failed reloads
-
-#### Behavior
-
-**What gets reloaded:**
-- Fallback model list
-- Cooldown periods
-- Fallback mode
-- Subagent fallback and maximum-depth settings
-- Retry policies
-- Circuit breaker settings
-- Custom, ignored, and learned error patterns
-- Metrics configuration
-- Log configuration
-- Health tracking settings
-
-**What doesn't change:**
-- Active session states
-- Rate-limited model tracking
-- Health tracking data
-- Metrics history
-
-#### Configuration Examples
-
-**Enable hot reload:**
-```json
-{
-  "configReload": {
-    "enabled": true
-  }
-}
-```
-
-**Full configuration:**
-```json
-{
-  "configReload": {
-    "enabled": true,
-    "watchFile": true,
-    "debounceMs": 1000,
-    "notifyOnReload": true
-  }
-}
-```
-
-#### Important Notes
-
-- **Disabled by default**: Set `configReload.enabled: true` to activate this feature
-- **Valid configs only**: Invalid configurations are rejected, and old config is preserved
-- **No restart needed**: You can experiment with different configurations without restarting OpenCode
-- **Session preservation**: Active sessions continue working during reload
-
-### ⚠️ Important: Configuration Required
-
-**As of v1.43.0, this plugin requires explicit configuration.**
-
-The default fallback models array is empty, meaning no fallback behavior will occur until you create a configuration file.
-
-**You must create a config file at one of these locations:**
-
-**Config file search order (highest to lowest priority):**
-1. `<worktree>/.opencode/rate-limit-fallback.json`
-2. `<worktree>/rate-limit-fallback.json`
-3. `<project>/.opencode/rate-limit-fallback.json`
-4. `<project>/rate-limit-fallback.json`
-5. `~/.opencode/rate-limit-fallback.json` (recommended for most users)
-6. `~/.config/opencode/rate-limit-fallback.json`
-
-> **Note**: Project-local and worktree configs (1-4) take precedence over global configs (5-6).
-
-**If no config file is found, the plugin will:**
-- Log a warning message
-- Not perform any fallback operations
-- Continue functioning normally with rate-limited models
-
-**Minimum working configuration:**
-```json
-{
-  "fallbackModels": [
-    { "providerID": "anthropic", "modelID": "claude-3-5-sonnet-20250514" }
-  ]
-}
-```
-
-## Migrating from v1.42.x or earlier
-
-### Breaking Change: Empty Default Models
-
-**What changed?**
-- v1.43.0 removed the default fallback models
-- You must now explicitly configure your fallback models
-- The plugin will not work without a configuration file
-
-**Why was this changed?**
-- To prevent unintended model usage (e.g., Gemini when not wanted)
-- To make configuration errors obvious immediately
-- To give users explicit control over which models to use
-
-### How to Migrate
-
-1. **Create a config file** at one of the locations listed above
-2. **Add your desired fallback models** to the `fallbackModels` array
-3. **Restart OpenCode** to load the new configuration
-
-### Example Migration
-
-**Before v1.43.0** (no config needed, used defaults):
-```
-Plugin automatically used Claude and Gemini models as fallbacks
-```
-
-**After v1.43.0** (must create config):
-```json
-{
-  "fallbackModels": [
-    { "providerID": "anthropic", "modelID": "claude-3-5-sonnet-20250514" },
-    { "providerID": "google", "modelID": "gemini-2.5-pro" }
-  ],
-  "enabled": true
-}
-```
-
-## Troubleshooting
-
-### "No fallback models configured" warning
-
-**Problem**: You see a warning about no fallback models configured.
-
-**Solution**: Create a config file with your desired fallback models. See the Configuration section above for details.
-
-### Plugin isn't falling back when rate limited
-
-**Problem**: Rate limits occur but no fallback happens.
-
-**Solutions**:
-1. Check that a config file exists and is valid
-2. Verify that `fallbackModels` is not empty in your config
-3. Check that `enabled: true` is set in your config
-4. Review logs for error messages
-
-### "Config file not found" warning
-
-**Problem**: You see warnings about config file not being found.
-
-**Solution**: Create a config file at one of the recommended locations:
-
-**Config file search order (highest to lowest priority):**
-1. `<worktree>/.opencode/rate-limit-fallback.json`
-2. `<worktree>/rate-limit-fallback.json`
-3. `<project>/.opencode/rate-limit-fallback.json`
-4. `<project>/rate-limit-fallback.json`
-5. `~/.opencode/rate-limit-fallback.json` (recommended for most users)
-6. `~/.config/opencode/rate-limit-fallback.json`
-
-> **Note**: Project-local and worktree configs (1-4) take precedence over global configs (5-6).
-
-### All models exhausted quickly
-
-**Problem**: Fallback models are exhausted in a short time.
-
-**Solutions**:
-1. Add more fallback models to your config
-2. Increase `cooldownMs` to allow models to recover
-3. Consider using `fallbackMode: "cycle"` to reset automatically
-4. Check your API rate limits
-
-## How It Works
-
-1. **Detection**: The plugin listens for rate limit errors via:
-    - `session.error` events
-    - `message.updated` events with errors
-    - `session.status` events with `type: "retry"`
-
-2. **Abort**: When a rate limit is detected, the current session is aborted to stop OpenCode's internal retry mechanism.
-
-3. **Fallback**: The plugin selects the next available model from the fallback list and resends the last user message.
-
-4. **Cooldown**: Rate-limited models are tracked and skipped for the configured cooldown period.
-
-## Subagent Support
-
-When OpenCode uses subagents (e.g., for complex tasks requiring specialized agents):
-
-- **Automatic Detection**: The plugin detects child `session.created` events through `info.parentID`
-- **Hierarchy Tracking**: Maintains parent-child relationships between sessions
-- **Targeted Retry**: When a subagent hits a rate limit, only that child session is retried with the next model and the same agent
-- **Independent State**: Parent and sibling sessions keep their own active models and retry state
-
-### Subagent Configuration
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |
-| `enableSubagentFallback` | boolean | `true` | Enable/disable fallback for subagent sessions |
-
-Set `enableSubagentFallback` to `true` when you want child sessions created by
-`Task` or custom subagents to use the fallback list. With `false`, rate-limit
-events from tracked child sessions are left to OpenCode.
-
-## Logging
-
-Plugin diagnostics are sent through [OpenCode's structured application log API](https://opencode.ai/docs/plugins/#logging). The plugin does not write diagnostics with `console.*`, so enabling `info` logging does not inject messages into the TUI console overlay.
-
-## Metrics
-
- The plugin includes a metrics collection feature that tracks:
-  - Rate limit events per provider/model
-  - Fallback statistics (total, successful, failed, average duration)
-  - **Retry statistics** (total attempts, successes, failures, average delay)
-  - Model performance (requests, successes, failures, response time)
-  - **Circuit breaker statistics** (state transitions, open/closed counts)
-  - **Dynamic prioritization statistics** (enabled status, reorder count, models with scores)
-  - **Pattern learning statistics** (processed, learned, rejected, persistence failures, average confidence, learned-pattern matches)
-
-### Metrics Configuration
-
-Metrics can be configured via the `metrics` section in your config file:
-
-```json
-{
-  "metrics": {
-    "enabled": true,
-    "output": {
-      "console": true,
-      "file": "/path/to/metrics.json",
-      "format": "pretty"
-    },
-    "resetInterval": "daily"
-  }
-}
-```
-
-### Metrics Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable/disable metrics collection |
-| `output.console` | boolean | `true` | Send metrics reports to the OpenCode application log |
-| `output.file` | string | `undefined` | Path to save metrics file |
-| `output.format` | string | `"pretty"` | Output format: `"pretty"`, `"json"`, or `"csv"` |
-| `resetInterval` | string | `"daily"` | Reset interval: `"hourly"`, `"daily"`, or `"weekly"` |
-
-### Output Formats
-
-**Pretty** (human-readable):
-```
-============================================================
-Rate Limit Fallback Metrics
-============================================================
-Started: 2025-02-10T02:00:00.000Z
-Generated: 2025-02-10T02:30:00.000Z
-
-Rate Limits:
-----------------------------------------
-  anthropic/claude-3-5-sonnet-20250514:
-    Count: 5
-    First: 2025-02-10T02:00:00.000Z
-    Last: 2025-02-10T02:29:00.000Z
-    Avg Interval: 3.50s
-
-Fallbacks:
-----------------------------------------
-  Total: 3
-  Successful: 2
-  Failed: 1
-  Avg Duration: 1.25s
-
-Retries:
-----------------------------------------
-  Total: 12
-  Successful: 8
-  Failed: 4
-  Avg Delay: 2.5s
-
-  By Model:
-    anthropic/claude-3-5-sonnet-20250514:
-      Attempts: 5
-      Successes: 3
-      Success Rate: 60.0%
-    google/gemini-2.5-pro:
-      Attempts: 7
-      Successes: 5
-      Success Rate: 71.4%
-
-Model Performance:
-----------------------------------------
-   google/gemini-2.5-pro:
-     Requests: 10
-     Successes: 9
-     Failures: 1
-     Avg Response: 0.85s
-     Success Rate: 90.0%
-
-  Circuit Breaker:
-  ----------------------------------------
-    anthropic/claude-3-5-sonnet-20250514:
-      State: OPEN
-      Failures: 5
-      Successes: 0
-      State Transitions: 2
-    google/gemini-2.5-pro:
-      State: CLOSED
-      Failures: 2
-      Successes: 8
-      State Transitions: 3
-
-  Dynamic Prioritization:
-  ----------------------------------------
-    Enabled: Yes
-    Reorders: 5
-    Models with dynamic scores: 3
-  ```
-
- **JSON** (machine-readable):
-```json
-{
-  "rateLimits": {
-    "anthropic/claude-3-5-sonnet-20250514": {
-      "count": 5,
-      "firstOccurrence": 1739148000000,
-      "lastOccurrence": 1739149740000,
-      "averageInterval": 3500
-    }
-  },
-  "fallbacks": {
-    "total": 3,
-    "successful": 2,
-    "failed": 1,
-    "averageDuration": 1250,
-    "byTargetModel": {
-      "google/gemini-2.5-pro": {
-        "usedAsFallback": 2,
-        "successful": 2,
-        "failed": 0
-      }
-    }
-  },
-  "retries": {
-    "total": 12,
-    "successful": 8,
-    "failed": 4,
-    "averageDelay": 2500,
-    "byModel": {
-      "anthropic/claude-3-5-sonnet-20250514": {
-        "attempts": 5,
-        "successes": 3
-      },
-      "google/gemini-2.5-pro": {
-        "attempts": 7,
-        "successes": 5
-      }
-    }
-  },
-   "modelPerformance": {
-     "google/gemini-2.5-pro": {
-       "requests": 10,
-       "successes": 9,
-       "failures": 1,
-       "averageResponseTime": 850
-     }
-   },
-   "circuitBreaker": {
-     "anthropic/claude-3-5-sonnet-20250514": {
-       "currentState": "OPEN",
-       "failures": 5,
-       "successes": 0,
-       "stateTransitions": 2
-     },
-     "google/gemini-2.5-pro": {
-       "currentState": "CLOSED",
-       "failures": 2,
-       "successes": 8,
-       "stateTransitions": 3
-      }
-    },
-    "dynamicPrioritization": {
-      "enabled": true,
-      "reorders": 5,
-      "modelsWithDynamicScores": 3
-    },
-    "startedAt": 1739148000000,
-    "generatedAt": 1739149800000
-  }
-  ```
-
-**CSV** (spreadsheet-friendly):
-```
-=== RATE_LIMITS ===
-model,count,first_occurrence,last_occurrence,avg_interval_ms
-anthropic/claude-3-5-sonnet-20250514,5,1739148000000,1739149740000,3500
-
-=== FALLBACKS_SUMMARY ===
-total,successful,failed,avg_duration_ms
-3,2,1,1250
-
-=== RETRIES_SUMMARY ===
-total,successful,failed,avg_delay_ms
-12,8,4,2500
-
-=== RETRIES_BY_MODEL ===
-model,attempts,successes,success_rate
-anthropic/claude-3-5-sonnet-20250514,5,3,60.0
-google/gemini-2.5-pro,7,5,71.4
-
- === MODEL_PERFORMANCE ===
- model,requests,successes,failures,avg_response_time_ms,success_rate
- google/gemini-2.5-pro,10,9,1,850,90.0
-
-  === CIRCUIT_BREAKER ===
-  model,current_state,failures,successes,state_transitions
-  anthropic/claude-3-5-sonnet-20250514,OPEN,5,0,2
-  google/gemini-2.5-pro,CLOSED,2,8,3
-
-  === DYNAMIC_PRIORITIZATION ===
-  enabled,reorders,models_with_dynamic_scores
-  Yes,5,3
-  ```
+English and Japanese READMEs should be updated together. Do not commit real credentials or production conversations as test fixtures.
 
 ## License
 
-MIT
+[MIT](LICENSE). OpenCode and provider names identify compatibility targets, not endorsement.

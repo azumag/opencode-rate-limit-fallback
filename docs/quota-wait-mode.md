@@ -1,6 +1,11 @@
-# Single-model quota wait mode
+# v1: single-model quota wait mode
 
-`fallbackMode: "wait"` is the simplest unattended rate-limit mode. It never
+[English overview](../README.md) | [日本語概要](../README.ja.md)
+
+**This page applies only to the 1.x implementation.** The 2.x adapter uses
+exponential backoff and has different lifecycle limitations; see the main README.
+
+`fallbackMode: "wait"` keeps the current model while waiting for a rate limit to clear. It never
 switches models. When the active model hits a recognized rate/quota limit, the
 plugin aborts the current server retry loop, waits for `cooldownMs`, and retries
 the same user message with the same model and OpenCode agent.
@@ -53,8 +58,8 @@ quota wait is explicitly intended to survive long quota-reset windows.
 ## Current scope
 
 - Only errors already classified by the plugin as rate/quota limits enter this
-  loop. Authentication, invalid-request, missing-model, and unrelated server
-  errors do not.
+  loop. Classification can be imperfect; do not assume every error mentioning
+  quota is recoverable. The v2 HTTP 401/403 safeguard is not a v1 backport.
 - The first version uses `cooldownMs` as a fixed polling interval. Provider
   `Retry-After` / quota-reset timestamps are not parsed yet.
 - OpenCode headless mode (`opencode run`) is supported. An explicit
@@ -64,3 +69,8 @@ quota wait is explicitly intended to survive long quota-reset windows.
 
 This mode is intentionally independent from a future multi-model behavior such
 as `A -> B -> wait -> A -> B`.
+
+Waiting can resume the agent's permitted actions much later. Retain appropriate
+tool approvals, respect provider retry instructions, and check billing settings.
+This feature does not bypass server-side quotas or grant permission for
+unrestricted automated use. See the terms and privacy sections in the main README.
