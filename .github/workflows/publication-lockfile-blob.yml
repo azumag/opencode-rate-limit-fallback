@@ -42,19 +42,23 @@ jobs:
           for name in ('vitest', '@vitest/coverage-v8'):
               assert original['devDependencies'][name] == '^4.1.10'
               expected['devDependencies'][name] = '4.1.11'
-          assert current == expected, 'Only the two Vitest dependency pins may change'
+          # npm omits an empty dependency map; restore it, not other metadata.
+          if 'dependencies' not in current and original.get('dependencies') == {}:
+              current['dependencies'] = {}
+          assert current == expected, 'Unexpected changed package fields: ' + ', '.join(k for k in set(current) | set(expected) if current.get(k) != expected.get(k))
+          pathlib.Path('package.json').write_text(json.dumps(expected, indent=2) + '\n')
           old_lock = json.loads((temp / 'original-lock.json').read_text())
           new_lock = json.loads(pathlib.Path('package-lock.json').read_text())
           assert {k: v for k, v in old_lock.items() if k != 'packages'} == {k: v for k, v in new_lock.items() if k != 'packages'}
           before = old_lock['packages']
           after = new_lock['packages']
           changed = [p for p in sorted(set(before) | set(after)) if before.get(p) != after.get(p)]
+          print('Changed lockfile entries: ' + json.dumps(changed))
           assert all(p == '' or p == 'node_modules/vitest' or p.startswith('node_modules/@vitest/') for p in changed), 'Unrelated dependency updates are forbidden'
           for name in ('vitest', '@vitest/coverage-v8', '@vitest/mocker'):
               assert after['node_modules/' + name]['version'] == '4.1.11'
           audit = json.loads((temp / 'fixed-audit.json').read_text())
           assert audit['metadata']['vulnerabilities']['total'] == 0 and 'error' not in audit
-          print('Changed lockfile entries: ' + json.dumps(changed))
           print('Full npm audit: zero vulnerabilities')
           root = 'https://api.github.com/repos/azumag/opencode-rate-limit-fallback/git/blobs'
           for name in ('package.json', 'package-lock.json'):
