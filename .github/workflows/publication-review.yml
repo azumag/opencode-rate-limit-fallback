@@ -186,7 +186,15 @@ jobs:
               status = int((temp / (name + '-exit')).read_text())
               raw = json.loads((temp / (name + '.json')).read_text())
               counts = raw.get('metadata', {}).get('vulnerabilities')
-              audit[name] = {'exit_code': status, 'vulnerabilities': counts, 'has_error': 'error' in raw}
+              details = []
+              for package, item in raw.get('vulnerabilities', {}).items():
+                  details.append({
+                      'package': package, 'severity': item.get('severity'),
+                      'is_direct': item.get('isDirect'), 'range': item.get('range'),
+                      'fix_available': item.get('fixAvailable'),
+                      'via': [value if isinstance(value, str) else {key: value.get(key) for key in ('name', 'title', 'url', 'severity', 'range')} for value in item.get('via', [])],
+                  })
+              audit[name] = {'exit_code': status, 'vulnerabilities': counts, 'has_error': 'error' in raw, 'details': details}
               audit_ok = audit_ok and status == 0 and isinstance(counts, dict) and counts.get('total') == 0 and 'error' not in raw
           tags = None
           if int((temp / 'npm-dist-tags-exit').read_text()) == 0:
@@ -211,3 +219,14 @@ jobs:
             ${{ runner.temp }}/publication-package-summary.json
           retention-days: 3
           if-no-files-found: error
+
+      - name: Preserve value-free findings even when a validation gate fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-review-summary
+          path: |
+            ${{ runner.temp }}/publication-review-summary.json
+            ${{ runner.temp }}/publication-package-summary.json
+          retention-days: 3
+          if-no-files-found: warn
