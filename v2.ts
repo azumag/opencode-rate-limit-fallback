@@ -41,7 +41,7 @@ type V2Context = {
 
 const MAX_BACKOFF_MS = 60 * 60 * 1000;
 
-const RATE_LIMIT_PATTERNS = [
+const RETRYABLE_ERROR_PATTERNS = [
   /\b429\b/i,
   /rate[\s_-]*limit/i,
   /too many requests/i,
@@ -49,14 +49,20 @@ const RATE_LIMIT_PATTERNS = [
   /usage limit/i,
   /resource[\s_-]*exhausted/i,
   /try again later/i,
+  // Transient upstream failures that OpenCode classifies as ProviderInternal
+  // (for example "Error from provider (Console Go): Upstream request failed:
+  // Endpoint is unavailable."). These clear on their own, so wait them out
+  // instead of letting the turn stop once OpenCode's own retry budget runs out.
+  /endpoint is unavailable/i,
+  /upstream request failed/i,
 ];
 
-function isRateLimit(value: unknown): boolean {
+function isRetryableError(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const error = value as RetryError;
   if (error.status === 429) return true;
   const text = `${error.type ?? ""} ${error.message ?? ""}`;
-  return RATE_LIMIT_PATTERNS.some((pattern) => pattern.test(text));
+  return RETRYABLE_ERROR_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 function effectiveCooldown(cooldownMs: number | undefined): number {
@@ -106,7 +112,7 @@ export default {
     });
 
     const retryRegistration = await context.session.hook("retry", (event) => {
-      if (!isRateLimit(event.error)) return;
+      if (!isRetryableError(event.error)) return;
       const previous = resumeTimers.get(event.sessionID);
       if (previous) {
         clearTimeout(previous);

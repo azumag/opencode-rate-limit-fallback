@@ -52,9 +52,10 @@ quota wait is explicitly intended to survive long quota-reset windows.
 
 ## Current scope
 
-- Only errors already classified by the plugin as rate/quota limits enter this
-  loop. Authentication, invalid-request, missing-model, and unrelated server
-  errors do not.
+- Only errors already classified by the plugin as rate/quota limits or as
+  transient upstream/provider failures (`Upstream request failed`,
+  `Endpoint is unavailable`) enter this loop. Authentication,
+  invalid-request, missing-model, and unrelated server errors do not.
 - The first version uses `cooldownMs` as a fixed polling interval. Provider
   `Retry-After` / quota-reset timestamps are not parsed yet.
 - OpenCode headless mode (`opencode run`) is supported. An explicit

@@ -149,4 +149,81 @@ describe("OpenCode v2 plugin", () => {
 
     await cleanup?.();
   });
+
+  it("waits out a provider-internal 'Endpoint is unavailable' error", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true,
+      fallbackMode: "wait",
+      cooldownMs: 60000,
+      fallbackModels: [],
+    }));
+    let retryHook: ((event: any) => void) | undefined;
+    const cleanup = await plugin.setup({
+      location: { directory: "/test" },
+      session: {
+        hook: vi.fn(async (name, callback) => {
+          if (name === "retry") retryHook = callback;
+          return { dispose: vi.fn() };
+        }),
+        prompt: vi.fn(),
+      },
+    });
+
+    const event = {
+      sessionID: "session-1",
+      attempt: 2,
+      error: {
+        type: "provider.internal",
+        message: "Error from provider (Console Go): Upstream request failed: Endpoint is unavailable.",
+      },
+      decision: { retry: true, delay: 2000 },
+    };
+    retryHook?.(event);
+    expect(event.decision).toEqual({ retry: true, delay: 60000 });
+
+    const secondEvent = { ...event, attempt: 3, decision: { retry: false } };
+    retryHook?.(secondEvent);
+    expect(secondEvent.decision).toEqual({ retry: true, delay: 120000 });
+
+    await cleanup?.();
+  });
+
+  it("resumes a terminal provider-internal failure after cooldown", async () => {
+    vi.useFakeTimers();
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
+      enabled: true,
+      fallbackMode: "wait",
+      cooldownMs: 1000,
+      fallbackModels: [],
+    }));
+    let retryHook: ((event: any) => void) | undefined;
+    const prompt = vi.fn().mockResolvedValue(undefined);
+    const cleanup = await plugin.setup({
+      location: { directory: "/test" },
+      session: {
+        hook: vi.fn(async (name, callback) => {
+          if (name === "retry") retryHook = callback;
+          return { dispose: vi.fn() };
+        }),
+        prompt,
+      },
+    });
+
+    retryHook?.({
+      sessionID: "session-1",
+      attempt: 5,
+      error: {
+        type: "provider.internal",
+        message: "Error from provider (Console Go): Upstream request failed: Endpoint is unavailable.",
+      },
+      decision: { retry: false },
+    });
+    await vi.advanceTimersByTimeAsync(1250);
+
+    expect(prompt).toHaveBeenCalledWith({ sessionID: "session-1", text: "", resume: true });
+
+    await cleanup?.();
+  });
 });
