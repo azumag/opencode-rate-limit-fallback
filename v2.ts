@@ -1,4 +1,5 @@
 import { loadConfig } from "./src/utils/config.js";
+import type { FallbackModel } from "./src/types/index.js";
 
 type RetryError = {
   readonly type?: string;
@@ -6,8 +7,16 @@ type RetryError = {
   readonly status?: number;
 };
 
+type ModelRef = {
+  readonly providerID: string;
+  readonly id: string;
+  readonly variant?: string;
+};
+
 type RetryEvent = {
   readonly sessionID: string;
+  /** Model of the request that failed. Present on OpenCode v2 GA. */
+  readonly model?: ModelRef;
   readonly error: RetryError;
   readonly attempt: number;
   decision: { retry: false } | { retry: true; delay: number };
@@ -36,10 +45,24 @@ type V2Context = {
       text: string;
       resume: boolean;
     }): Promise<unknown>;
+    // Optional so a host without model switching still gets wait behaviour.
+    switchModel?(input: { sessionID: string; model: ModelRef }): Promise<unknown>;
+    get?(input: { sessionID: string }): Promise<{ readonly model?: ModelRef } | undefined>;
+  };
+  readonly event?: {
+    subscribe(options?: { signal?: AbortSignal }): AsyncIterable<SessionEvent>;
   };
 };
 
+type SessionEvent = {
+  readonly type: string;
+  readonly data?: { readonly sessionID?: string; readonly error?: RetryError };
+};
+
 const MAX_BACKOFF_MS = 60 * 60 * 1000;
+
+/** Delay before retrying on a freshly selected fallback model. */
+const SWITCH_DELAY_MS = 1000;
 
 const RETRYABLE_ERROR_PATTERNS = [
   /\b429\b/i,
@@ -74,65 +97,189 @@ function exponentialDelay(baseDelayMs: number, failureCount: number): number {
   return Math.min(Math.max(MAX_BACKOFF_MS, baseDelayMs), baseDelayMs * 2 ** exponent);
 }
 
+function sameModel(a: ModelRef | undefined, b: ModelRef | undefined): boolean {
+  return a !== undefined && b !== undefined && a.providerID === b.providerID && a.id === b.id
+    && (a.variant ?? "default") === (b.variant ?? "default");
+}
+
+function toModelRef(model: FallbackModel): ModelRef {
+  return { providerID: model.providerID, id: model.modelID };
+}
+
+/**
+ * The models a session walks through on consecutive failures: its own model,
+ * then the configured fallbacks listed after it. A model that is not in
+ * `fallbackModels` has no fallbacks and is simply retried after a cooldown.
+ */
+function chainFor(model: ModelRef | undefined, fallbacks: readonly ModelRef[]): ModelRef[] {
+  if (model === undefined) return [];
+  const index = fallbacks.findIndex((candidate) => sameModel(candidate, model));
+  if (index < 0) return [model];
+  return [model, ...fallbacks.slice(index + 1).filter((candidate) => !sameModel(candidate, model))];
+}
+
+/** One run of consecutive failures in a session, ended by a real user prompt. */
+type Streak = {
+  /** The session's model when the streak began; restored on the next real prompt. */
+  original: ModelRef | undefined;
+  chain: ModelRef[];
+  /** Full passes through the chain that ended in failure; drives the backoff. */
+  passes: number;
+  /** The model this plugin last selected, if it switched at all. */
+  selected?: ModelRef;
+};
+
 export default {
   id: "opencode-rate-limit-fallback",
   async setup(context: V2Context) {
     const { config } = loadConfig(context.location.directory, context.location.directory);
-    if (!config.enabled || config.fallbackMode !== "wait") return;
+    if (!config.enabled) return;
 
+    // "wait" never switches models; the other modes walk the fallback chain
+    // first and only then decide between waiting ("cycle", "retry-last") and
+    // giving up ("stop").
+    const mode = config.fallbackMode;
+    const fallbacks = mode === "wait" ? [] : (config.fallbackModels ?? [])
+      .filter((model) => typeof model?.providerID === "string" && typeof model?.modelID === "string")
+      .map(toModelRef);
     const cooldownMs = effectiveCooldown(config.cooldownMs);
     const resumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    const failureCounts = new Map<string, number>();
+    const streaks = new Map<string, Streak>();
 
-    const clearSessionState = (sessionID: string) => {
+    const cancelResume = (sessionID: string) => {
       const previous = resumeTimers.get(sessionID);
       if (previous) {
         clearTimeout(previous);
         resumeTimers.delete(sessionID);
       }
-      failureCounts.delete(sessionID);
     };
 
     const scheduleResume = (sessionID: string, delay: number) => {
-      const previous = resumeTimers.get(sessionID);
-      if (previous) clearTimeout(previous);
+      cancelResume(sessionID);
       const timer = setTimeout(() => {
         resumeTimers.delete(sessionID);
         void context.session.prompt({ sessionID, text: "", resume: true }).catch(() => {
           // A deleted or otherwise unavailable session must not keep retrying.
         });
-      }, delay + 250);
+      }, delay);
       resumeTimers.set(sessionID, timer);
     };
 
-    const promptRegistration = await context.session.hook("prompt", (event) => {
-      // A real user prompt starts a fresh backoff sequence. The empty prompt used
-      // to resume after OpenCode's hard retry ceiling must preserve the streak.
-      if (event.prompt.text.trim().length > 0) clearSessionState(event.sessionID);
+    const switchModel = async (sessionID: string, model: ModelRef): Promise<boolean> => {
+      if (!context.session.switchModel) return false;
+      try {
+        await context.session.switchModel({ sessionID, model });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const currentModel = async (sessionID: string): Promise<ModelRef | undefined> => {
+      try {
+        return context.session.get ? (await context.session.get({ sessionID }))?.model : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+
+    // Put the session back on its own model, unless someone picked another
+    // model since this plugin switched it.
+    const restoreModel = async (sessionID: string, streak: Streak) => {
+      if (streak.selected === undefined || streak.original === undefined) return;
+      if (sameModel(streak.selected, streak.original)) return;
+      const current = await currentModel(sessionID);
+      if (current !== undefined && !sameModel(current, streak.selected)) return;
+      await switchModel(sessionID, streak.original);
+    };
+
+    // `failed` just failed with a retryable error: select the model for the
+    // next try and say when it is due.
+    const decide = async (sessionID: string, failed: ModelRef | undefined): Promise<RetryEvent["decision"]> => {
+      let streak = streaks.get(sessionID);
+      let position = streak?.chain.findIndex((model) => sameModel(model, failed)) ?? -1;
+      if (!streak || (failed !== undefined && position < 0)) {
+        // First failure, or the model was changed by someone else mid-streak:
+        // start over from the model that just failed.
+        streak = { original: failed, chain: chainFor(failed, fallbacks), passes: streak?.passes ?? 0 };
+        streaks.set(sessionID, streak);
+        position = 0;
+      }
+
+      let next: ModelRef | undefined = streak.chain[position + 1];
+      let delay = SWITCH_DELAY_MS;
+      if (next !== undefined && !(await switchModel(sessionID, next))) next = undefined;
+      if (next === undefined) {
+        // Every model in the chain failed on this pass (or switching is not possible).
+        if (mode === "stop" && streak.chain.length > 1) return { retry: false };
+        streak.passes += 1;
+        delay = exponentialDelay(cooldownMs, streak.passes);
+        const first = streak.chain[0];
+        if (mode !== "retry-last" && first !== undefined && !sameModel(first, failed)) {
+          if (await switchModel(sessionID, first)) next = first;
+        }
+      }
+      if (next !== undefined) streak.selected = next;
+      return { retry: true, delay };
+    };
+
+    const promptRegistration = await context.session.hook("prompt", async (event) => {
+      // A real user prompt starts a fresh backoff sequence on the session's own
+      // model. The empty prompt used to resume a failed turn must preserve the
+      // streak.
+      if (event.prompt.text.trim().length === 0) return;
+      cancelResume(event.sessionID);
+      const streak = streaks.get(event.sessionID);
+      streaks.delete(event.sessionID);
+      if (streak) await restoreModel(event.sessionID, streak);
     });
 
-    const retryRegistration = await context.session.hook("retry", (event) => {
+    const retryRegistration = await context.session.hook("retry", async (event) => {
       if (!isRetryableError(event.error)) return;
-      const previous = resumeTimers.get(event.sessionID);
-      if (previous) {
-        clearTimeout(previous);
-        resumeTimers.delete(event.sessionID);
-      }
-      const failureCount = (failureCounts.get(event.sessionID) ?? 0) + 1;
-      failureCounts.set(event.sessionID, failureCount);
-      const delay = exponentialDelay(cooldownMs, failureCount);
-      event.decision = { retry: true, delay };
-      // OpenCode v2 currently stops after attempt 5 even when a retry hook
-      // requests another retry. Resume the same prompt after that hard limit.
-      if (event.attempt >= 5) scheduleResume(event.sessionID, delay);
+      cancelResume(event.sessionID);
+      event.decision = await decide(event.sessionID, event.model);
     });
+
+    // OpenCode has its own ceiling on retries and fails the turn once it is
+    // reached, even when this plugin asked for another try. Such a turn is
+    // resumed when the next try is due. An interrupted turn stays stopped.
+    const abort = new AbortController();
+    const onEvent = async (event: SessionEvent) => {
+      const sessionID = event.data?.sessionID;
+      if (typeof sessionID !== "string") return;
+      if (event.type === "session.deleted") {
+        cancelResume(sessionID);
+        streaks.delete(sessionID);
+        return;
+      }
+      if (event.type !== "session.execution.failed") return;
+      const streak = streaks.get(sessionID);
+      if (!streak || !isRetryableError(event.data?.error)) return;
+      const failed = (await currentModel(sessionID)) ?? streak.selected ?? streak.original;
+      const decision = await decide(sessionID, failed);
+      if (decision.retry) scheduleResume(sessionID, decision.delay);
+    };
+    const watch = async (events: NonNullable<V2Context["event"]>) => {
+      while (!abort.signal.aborted) {
+        try {
+          for await (const event of events.subscribe({ signal: abort.signal })) {
+            void onEvent(event).catch(() => {});
+          }
+        } catch {
+          // The stream broke; subscribe again below.
+        }
+        if (!abort.signal.aborted) await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    };
+    if (context.event) void watch(context.event);
 
     return async () => {
+      abort.abort();
       await promptRegistration.dispose();
       await retryRegistration.dispose();
       for (const timer of resumeTimers.values()) clearTimeout(timer);
       resumeTimers.clear();
-      failureCounts.clear();
+      streaks.clear();
     };
   },
 };
