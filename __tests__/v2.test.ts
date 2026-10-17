@@ -301,12 +301,28 @@ describe("OpenCode v2 plugin", () => {
     await cleanup?.();
   });
 
+  it("registers nothing without a config file, like 2.0.3", async () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    const hook = vi.fn(async () => ({ dispose: vi.fn() }));
+    const cleanup = await plugin.setup({ location: { directory: "/test" }, session: { hook, prompt: vi.fn() } });
+    expect(hook).not.toHaveBeenCalled();
+    expect(cleanup).toBeUndefined();
+  });
+
+  it("registers nothing for a cycle config without fallback models, like 2.0.3", async () => {
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ enabled: true, fallbackMode: "cycle", fallbackModels: [] }));
+    const hook = vi.fn(async () => ({ dispose: vi.fn() }));
+    await plugin.setup({ location: { directory: "/test" }, session: { hook, prompt: vi.fn() } });
+    expect(hook).not.toHaveBeenCalled();
+  });
+
   describe("model fallback", () => {
     const GLM = { providerID: "opencode", id: "glm-5.3-flash-free" };
     const DEEPSEEK = { providerID: "opencode", id: "deepseek-v4.1-flash-free" };
     const OTHER = { providerID: "opencode-go", id: "kimi-k3" };
 
-    async function setupFallback(fallbackMode: string, sessionModel: { providerID: string; id: string } = GLM) {
+    async function setupFallback(fallbackMode: string, sessionModel: { providerID: string; id: string } = GLM, extra: Record<string, unknown> = {}) {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(readFileSync).mockReturnValue(JSON.stringify({
         enabled: true,
@@ -316,6 +332,7 @@ describe("OpenCode v2 plugin", () => {
           { providerID: GLM.providerID, modelID: GLM.id },
           { providerID: DEEPSEEK.providerID, modelID: DEEPSEEK.id },
         ],
+        ...extra,
       }));
       const hooks: Record<string, (event: any) => Promise<void> | void> = {};
       let current = sessionModel;
@@ -438,12 +455,42 @@ describe("OpenCode v2 plugin", () => {
       await t.cleanup?.();
     });
 
-    it("waits on the same model when the session's model is not in the chain", async () => {
+    it("leaves a session whose model is not in the chain to OpenCode by default", async () => {
       const t = await setupFallback("cycle", OTHER);
+      expect(await t.fail(2)).toEqual({ retry: true, delay: 2000 }); // OpenCode's own decision, untouched
+      expect(t.switchModel).not.toHaveBeenCalled();
+      // and a turn OpenCode gives up on is not resumed
+      vi.useFakeTimers();
+      t.events.push({ type: "session.execution.failed", data: { sessionID: "session-1", error: { status: 429, message: "Rate limit exceeded" } } });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      expect(t.prompt).not.toHaveBeenCalled();
+      await t.cleanup?.();
+    });
+
+    it("does not resume a turn that ended on a model outside the chain", async () => {
+      vi.useFakeTimers();
+      const t = await setupFallback("cycle");
+      await t.fail(2); // GLM -> DeepSeek: a streak exists
+      t.get.mockResolvedValue({ model: OTHER }); // then someone picks a model outside the chain
+      t.events.push({ type: "session.execution.failed", data: { sessionID: "session-1", error: { status: 429, message: "Rate limit exceeded" } } });
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      expect(t.prompt).not.toHaveBeenCalled();
+      await t.cleanup?.();
+    });
+
+    it("otherModels \"wait\": waits on the same model when the session's model is not in the chain", async () => {
+      const t = await setupFallback("cycle", OTHER, { otherModels: "wait" });
       expect(await t.fail(2)).toEqual({ retry: true, delay: 60000 });
       expect(await t.fail(3)).toEqual({ retry: true, delay: 120000 });
       expect(t.switchModel).not.toHaveBeenCalled();
       expect(t.model()).toEqual(OTHER);
+      await t.cleanup?.();
+    });
+
+    it("otherModels \"wait\" does not change how chain models fall back", async () => {
+      const t = await setupFallback("cycle", GLM, { otherModels: "wait" });
+      expect(await t.fail(2)).toEqual({ retry: true, delay: 1000 });
+      expect(t.model()).toEqual(DEEPSEEK);
       await t.cleanup?.();
     });
 

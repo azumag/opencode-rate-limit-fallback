@@ -109,7 +109,8 @@ function toModelRef(model: FallbackModel): ModelRef {
 /**
  * The models a session walks through on consecutive failures: its own model,
  * then the configured fallbacks listed after it. A model that is not in
- * `fallbackModels` has no fallbacks and is simply retried after a cooldown.
+ * `fallbackModels` has no fallbacks: it is retried after a cooldown when
+ * otherModels is "wait" (or in "wait" mode), and otherwise never gets here.
  */
 function chainFor(model: ModelRef | undefined, fallbacks: readonly ModelRef[]): ModelRef[] {
   if (model === undefined) return [];
@@ -137,11 +138,16 @@ export default {
 
     // "wait" never switches models; the other modes walk the fallback chain
     // first and only then decide between waiting ("cycle", "retry-last") and
-    // giving up ("stop").
+    // giving up ("stop"). A session whose model is not in the chain is left
+    // to OpenCode unless otherModels is "wait".
     const mode = config.fallbackMode;
+    const otherModels = config.otherModels ?? "ignore";
     const fallbacks = mode === "wait" ? [] : (config.fallbackModels ?? [])
       .filter((model) => typeof model?.providerID === "string" && typeof model?.modelID === "string")
       .map(toModelRef);
+    if (mode !== "wait" && fallbacks.length === 0 && otherModels !== "wait") return;
+    const handles = (model: ModelRef | undefined) =>
+      mode === "wait" || otherModels === "wait" || fallbacks.some((candidate) => sameModel(candidate, model));
     const cooldownMs = effectiveCooldown(config.cooldownMs);
     const resumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const streaks = new Map<string, Streak>();
@@ -235,7 +241,7 @@ export default {
     });
 
     const retryRegistration = await context.session.hook("retry", async (event) => {
-      if (!isRetryableError(event.error)) return;
+      if (!isRetryableError(event.error) || !handles(event.model)) return;
       cancelResume(event.sessionID);
       event.decision = await decide(event.sessionID, event.model);
     });
@@ -256,6 +262,7 @@ export default {
       const streak = streaks.get(sessionID);
       if (!streak || !isRetryableError(event.data?.error)) return;
       const failed = (await currentModel(sessionID)) ?? streak.selected ?? streak.original;
+      if (!handles(failed)) return;
       const decision = await decide(sessionID, failed);
       if (decision.retry) scheduleResume(sessionID, decision.delay);
     };

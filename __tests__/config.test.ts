@@ -161,4 +161,11 @@ describe('config utilities', () => {
     expect(config.maxSubagentDepth).toBe(4);
     expect(config.enableSubagentFallback).toBe(false);
   });
+
+  it('keeps a valid otherModels value and drops an invalid one', () => {
+    expect(validateConfig({ otherModels: 'wait' }).otherModels).toBe('wait');
+    expect(validateConfig({ otherModels: 'ignore' }).otherModels).toBe('ignore');
+    expect(validateConfig({ otherModels: 'sleep' } as unknown as Partial<PluginConfig>).otherModels).toBeUndefined();
+    expect(validateConfig({}).otherModels).toBeUndefined();
+  });
 });

@@ -34,7 +34,7 @@ OpenCode v2 / Web uses the `plugins` key:
 
 ```json
 {
-  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.2"]
+  "plugins": ["@azumag/opencode-rate-limit-fallback@2.1.0"]
 }
 ```
 
@@ -62,8 +62,12 @@ every model from the session's own model to the end of the chain has failed,
 | `"stop"` | Let the turn fail |
 | `"wait"` | Never switch models: retry the session's model after a cooldown |
 
-A session whose model is not in `fallbackModels` is never switched; it is
-retried on its own model after a cooldown, as in `"wait"`.
+A session whose model is not in `fallbackModels` is never switched. By default
+(`"otherModels": "ignore"`) the plugin leaves it to OpenCode's own retries, as
+2.0.x did; with `"otherModels": "wait"` it is retried on its own model after a
+cooldown, as in `"wait"`. Without fallback models (and without
+`"otherModels": "wait"`), the plugin does nothing unless `fallbackMode` is
+`"wait"`.
 
 The cooldown starts at `cooldownMs` and doubles with every consecutive
 exhausted pass (`1x`, `2x`, `4x`, ...), capped at one hour. The next user prompt
@@ -81,6 +85,7 @@ interrupted (by the user, or by a bot that gave up) is not resumed.
   "enabled": true,
   "fallbackMode": "cycle",
   "cooldownMs": 60000,
+  "otherModels": "wait",
   "fallbackModels": [
     { "providerID": "opencode", "modelID": "glm-5.3-flash-free" },
     { "providerID": "opencode", "modelID": "deepseek-v4.1-flash-free" }
@@ -162,6 +167,7 @@ Create a configuration file at one of these locations:
   | `enabled` | boolean | `true` | Enable/disable the plugin |
   | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
   | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
+  | `otherModels` | string | `"ignore"` | OpenCode v2 only: a session whose model is not in `fallbackModels` is left to OpenCode (`"ignore"`) or retried on its own model after a cooldown (`"wait"`) |
   | `headlessOnRateLimit` | string | `undefined` | Headless mode behavior on rate limit (see below) |
   | `fallbackModels` | array | See below | List of fallback models in priority order |
   | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |

@@ -27,6 +27,14 @@ export interface FallbackModel {
 export type FallbackMode = "cycle" | "stop" | "retry-last" | "wait";
 
 /**
+ * OpenCode v2: what happens to a session whose model is not in
+ * fallbackModels (with a fallbackMode other than "wait"). "ignore" leaves the
+ * failure to OpenCode's own retries; "wait" retries the same model after a
+ * cooldown, as in "wait" mode.
+ */
+export type OtherModelsMode = "ignore" | "wait";
+
+/**
  * Headless mode behavior on rate limit:
  * - "ignore": Do nothing, let server handle retries (default)
  * - "abort": Abort the session to terminate the prompt immediately
@@ -310,6 +318,7 @@ export interface PluginConfig {
   cooldownMs: number;
   enabled: boolean;
   fallbackMode: FallbackMode;
+  otherModels?: OtherModelsMode;
   headlessOnRateLimit?: HeadlessOnRateLimit;
   maxSubagentDepth?: number;
   enableSubagentFallback?: boolean;
@@ -659,6 +668,11 @@ export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = {
  * Valid fallback modes
  */
 export const VALID_FALLBACK_MODES: FallbackMode[] = ["cycle", "stop", "retry-last", "wait"];
+
+/**
+ * Valid otherModels options (OpenCode v2)
+ */
+export const VALID_OTHER_MODELS: OtherModelsMode[] = ["ignore", "wait"];
 
 /**
  * Valid headless on rate limit options
