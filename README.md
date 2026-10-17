@@ -34,7 +34,7 @@ OpenCode v2 / Web uses the `plugins` key:
 
 ```json
 {
-  "plugins": ["@azumag/opencode-rate-limit-fallback@2.0.2"]
+  "plugins": ["@azumag/opencode-rate-limit-fallback@2.1.0"]
 }
 ```
 
@@ -49,13 +49,49 @@ OpenCode v1 must stay on the latest 1.x release:
 Version 2 is published under the `opencode-v2` npm tag so unpinned OpenCode v1
 installations do not receive the incompatible v2 entry point.
 
-The v2 entry point currently implements `fallbackMode: "wait"`. Model-switching
-modes remain available in the v1-compatible 1.x line.
+In v2, `fallbackModels` is an ordered chain. When a request fails with a rate
+limit or a transient upstream error, a session whose model is in the chain is
+switched to the next model after it and retried about one second later. Once
+every model from the session's own model to the end of the chain has failed,
+`fallbackMode` decides what happens next:
 
-In v2 wait mode, `cooldownMs` is the initial delay. Consecutive rate-limit
-failures use exponential backoff (`1x`, `2x`, `4x`, ...), capped at one hour.
-A new user prompt resets the delay to `cooldownMs`; automatic resume attempts
+| Mode | v2 behavior once the chain is exhausted |
+|------|------------------------------------------|
+| `"cycle"` | Go back to the session's own model and retry after a cooldown |
+| `"retry-last"` | Stay on the last model and retry it after a cooldown |
+| `"stop"` | Let the turn fail |
+| `"wait"` | Never switch models: retry the session's model after a cooldown |
+
+A session whose model is not in `fallbackModels` is never switched. By default
+(`"otherModels": "ignore"`) the plugin leaves it to OpenCode's own retries, as
+2.0.x did; with `"otherModels": "wait"` it is retried on its own model after a
+cooldown, as in `"wait"`. Without fallback models (and without
+`"otherModels": "wait"`), the plugin does nothing unless `fallbackMode` is
+`"wait"`.
+
+The cooldown starts at `cooldownMs` and doubles with every consecutive
+exhausted pass (`1x`, `2x`, `4x`, ...), capped at one hour. The next user prompt
+puts the session back on its own model (unless someone picked another model in
+the meantime) and resets the delay to `cooldownMs`; automatic resume attempts
 preserve the existing backoff sequence.
+
+OpenCode stops retrying a turn after its own retry limit even when the plugin
+asks for another try. When such a turn fails with a rate limit or transient
+upstream error, the plugin resumes it once the next try is due. A turn that was
+interrupted (by the user, or by a bot that gave up) is not resumed.
+
+```json
+{
+  "enabled": true,
+  "fallbackMode": "cycle",
+  "cooldownMs": 60000,
+  "otherModels": "wait",
+  "fallbackModels": [
+    { "providerID": "opencode", "modelID": "glm-5.3-flash-free" },
+    { "providerID": "opencode", "modelID": "deepseek-v4.1-flash-free" }
+  ]
+}
+```
 
 OpenCode will automatically install the plugin on startup.
 
@@ -131,6 +167,7 @@ Create a configuration file at one of these locations:
   | `enabled` | boolean | `true` | Enable/disable the plugin |
   | `cooldownMs` | number | `60000` | Cooldown period (ms) before retrying a rate-limited model |
   | `fallbackMode` | string | `"cycle"` | Behavior when all models are exhausted (see below) |
+  | `otherModels` | string | `"ignore"` | OpenCode v2 only: a session whose model is not in `fallbackModels` is left to OpenCode (`"ignore"`) or retried on its own model after a cooldown (`"wait"`) |
   | `headlessOnRateLimit` | string | `undefined` | Headless mode behavior on rate limit (see below) |
   | `fallbackModels` | array | See below | List of fallback models in priority order |
   | `maxSubagentDepth` | number | `10` | Maximum nesting depth for subagent hierarchies |

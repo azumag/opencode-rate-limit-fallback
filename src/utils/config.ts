@@ -10,6 +10,7 @@ import {
   DEFAULT_FALLBACK_MODELS,
   VALID_FALLBACK_MODES,
   VALID_HEADLESS_ON_RATE_LIMIT,
+  VALID_OTHER_MODELS,
   VALID_RESET_INTERVALS,
   DEFAULT_RETRY_POLICY,
   VALID_RETRY_STRATEGIES,
@@ -97,6 +98,7 @@ function isValidIgnorePattern(value: unknown): value is string | RegExp {
 export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
   const mode = config.fallbackMode;
   const headlessOnRateLimit = config.headlessOnRateLimit;
+  const otherModels = config.otherModels;
   const resetInterval = config.metrics?.resetInterval;
   const strategy = config.retryPolicy?.strategy;
   const maxSubagentDepth = config.maxSubagentDepth;
@@ -141,6 +143,7 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
     fallbackModels: Array.isArray(config.fallbackModels) ? config.fallbackModels : DEFAULT_CONFIG.fallbackModels,
     fallbackMode: mode && VALID_FALLBACK_MODES.includes(mode) ? mode : DEFAULT_CONFIG.fallbackMode,
     headlessOnRateLimit: headlessOnRateLimit && VALID_HEADLESS_ON_RATE_LIMIT.includes(headlessOnRateLimit) ? headlessOnRateLimit : undefined,
+    otherModels: otherModels && VALID_OTHER_MODELS.includes(otherModels) ? otherModels : undefined,
     maxSubagentDepth: Number.isInteger(maxSubagentDepth) && (maxSubagentDepth ?? 0) > 0
       ? maxSubagentDepth
       : DEFAULT_CONFIG.maxSubagentDepth,
