@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join, sep } from 'path';
-import { tmpdir } from 'os';
+import * as os from 'os';
 import { loadConfig, validateConfig } from '../src/utils/config.js';
 import type { PluginConfig } from '../src/types/index.js';
+
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 
 describe('config utilities', () => {
   let testRoot: string;
 
   beforeEach(() => {
-    testRoot = mkdtempSync(join(tmpdir(), 'rate-limit-config-test-'));
+    testRoot = mkdtempSync(join(os.tmpdir(), 'rate-limit-config-test-'));
   });
 
   afterEach(() => {
@@ -46,6 +51,21 @@ describe('config utilities', () => {
 
     expect(result.source).toBe(homeConfigPath);
     expect(result.config.cooldownMs).toBe(34567);
+  });
+
+  it('falls back to os.homedir() when HOME and XDG_CONFIG_HOME are unset', () => {
+    const fakeHome = join(testRoot, 'win-home');
+    const configPath = join(fakeHome, '.config', 'opencode', 'rate-limit-fallback.json');
+    mkdirSync(join(fakeHome, '.config', 'opencode'), { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ cooldownMs: 45678 }));
+    vi.stubEnv('HOME', undefined);
+    vi.stubEnv('XDG_CONFIG_HOME', undefined);
+    vi.mocked(os.homedir).mockImplementationOnce(() => fakeHome);
+
+    const result = loadConfig(join(testRoot, 'project'));
+
+    expect(result.source).toBe(configPath);
+    expect(result.config.cooldownMs).toBe(45678);
   });
 
   it('filters invalid ignore pattern entries before runtime matching', () => {
