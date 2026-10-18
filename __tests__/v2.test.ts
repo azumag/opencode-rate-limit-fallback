@@ -515,6 +515,41 @@ describe("OpenCode v2 plugin", () => {
       await t.cleanup?.();
     });
 
+    it("matches a reasoning-effort variant and carries it onto the same-model fallback", async () => {
+      const PLAN = { providerID: "zai-coding-plan", id: "glm-5.3" };
+      const PAYG = { providerID: "zai", id: "glm-5.3" };
+      const FLASH = { providerID: "zai-coding-plan", id: "glm-5.3-flash" };
+      const t = await setupFallback("cycle", { ...PLAN, variant: "high" }, {
+        fallbackModels: [
+          { providerID: PLAN.providerID, modelID: PLAN.id },
+          { providerID: PAYG.providerID, modelID: PAYG.id },
+          { providerID: FLASH.providerID, modelID: FLASH.id },
+        ],
+      });
+      expect(await t.fail(2)).toEqual({ retry: true, delay: 1000 });
+      expect(t.switchModel).toHaveBeenCalledWith({ sessionID: "session-1", model: { ...PAYG, variant: "high" } });
+      expect(t.model()).toEqual({ ...PAYG, variant: "high" });
+      await t.cleanup?.();
+    });
+
+    it("does not carry the variant onto a different-model fallback", async () => {
+      const PLAN = { providerID: "zai-coding-plan", id: "glm-5.3" };
+      const PAYG = { providerID: "zai", id: "glm-5.3" };
+      const FLASH = { providerID: "zai-coding-plan", id: "glm-5.3-flash" };
+      const t = await setupFallback("cycle", { ...PLAN, variant: "high" }, {
+        fallbackModels: [
+          { providerID: PLAN.providerID, modelID: PLAN.id },
+          { providerID: PAYG.providerID, modelID: PAYG.id },
+          { providerID: FLASH.providerID, modelID: FLASH.id },
+        ],
+      });
+      await t.fail(2); // glm-5.3#high -> zai/glm-5.3#high
+      expect(t.model()).toEqual({ ...PAYG, variant: "high" });
+      await t.fail(3); // zai/glm-5.3#high -> flash (variant is not carried)
+      expect(t.model()).toEqual(FLASH);
+      await t.cleanup?.();
+    });
+
     it("resumes a turn OpenCode failed at its retry ceiling, on the next model", async () => {
       vi.useFakeTimers();
       const t = await setupFallback("cycle");

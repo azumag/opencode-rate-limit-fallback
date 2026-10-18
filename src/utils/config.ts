@@ -4,6 +4,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { join, resolve, normalize, relative } from "path";
+import { homedir as osHomedir } from "os";
 import type { PluginConfig } from '../types/index.js';
 import type { Logger } from '../../logger.js';
 import {
@@ -200,7 +201,7 @@ export function validateConfig(config: Partial<PluginConfig>): PluginConfig {
  * Load and validate config from file paths
  */
 export function loadConfig(directory: string, worktree?: string, logger?: Logger): ConfigLoadResult {
-  const homedir = process.env.HOME || "";
+  const homedir = process.env.HOME || osHomedir();
   const xdgConfigHome = process.env.XDG_CONFIG_HOME || join(homedir, ".config");
 
   // Build search paths: worktree first, then directory, then home locations
