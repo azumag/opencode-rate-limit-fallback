@@ -98,8 +98,10 @@ function exponentialDelay(baseDelayMs: number, failureCount: number): number {
 }
 
 function sameModel(a: ModelRef | undefined, b: ModelRef | undefined): boolean {
-  return a !== undefined && b !== undefined && a.providerID === b.providerID && a.id === b.id
-    && (a.variant ?? "default") === (b.variant ?? "default");
+  // Variant (reasoning-effort selector) is deliberately ignored when matching:
+  // the chain is keyed by provider + model, so a session on glm-5.3#high must
+  // still match a variant-less glm-5.3 chain entry and fall back.
+  return a !== undefined && b !== undefined && a.providerID === b.providerID && a.id === b.id;
 }
 
 function toModelRef(model: FallbackModel): ModelRef {
@@ -116,7 +118,14 @@ function chainFor(model: ModelRef | undefined, fallbacks: readonly ModelRef[]): 
   if (model === undefined) return [];
   const index = fallbacks.findIndex((candidate) => sameModel(candidate, model));
   if (index < 0) return [model];
-  return [model, ...fallbacks.slice(index + 1).filter((candidate) => !sameModel(candidate, model))];
+  // Carry the failed model's reasoning-effort variant onto fallbacks of the
+  // SAME model so "same model, same effort" holds across providers (e.g.
+  // zai-coding-plan/glm-5.3#high -> zai/glm-5.3#high). Different-model tiers
+  // (e.g. a flash model) keep their own default effort.
+  const variant = model.variant;
+  const carry = (candidate: ModelRef): ModelRef =>
+    variant && !candidate.variant && candidate.id === model.id ? { ...candidate, variant } : candidate;
+  return [model, ...fallbacks.slice(index + 1).filter((candidate) => !sameModel(candidate, model)).map(carry)];
 }
 
 /** One run of consecutive failures in a session, ended by a real user prompt. */
